@@ -1,0 +1,13 @@
+{
+  "name": "deletef",
+  "version": "1.0.0",
+  "description": "Firefox extension that deletes all Facebook conversation threads via the site UI.",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.0"
+  }
+}

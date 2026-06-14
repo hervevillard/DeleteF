@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "DeleteF — Facebook Messages Deleter",
+  "version": "1.0.0",
+  "description": "Deletes all conversation threads from facebook.com/messages. Use at your own risk; deletion is permanent.",
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png"
+  },
+  "permissions": ["activeTab", "scripting"],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_title": "DeleteF — toggle delete panel",
+    "default_icon": {
+      "48": "icons/icon-48.png",
+      "96": "icons/icon-96.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.facebook.com/messages/*"],
+      "js": ["lib/dom-helpers.js", "content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "deletef@local.extension",
+      "strict_min_version": "121.0"
+    }
+  }
+}
