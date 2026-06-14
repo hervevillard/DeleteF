@@ -4,7 +4,8 @@
       "Bash(git -C /mnt/c/Herve/PV/DeleteF status)",
       "Bash(git init *)",
       "Bash(git add *)",
-      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'Add design spec for DeleteF Firefox extension *)"
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'Add design spec for DeleteF Firefox extension *)",
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'Add implementation plan for DeleteF extension *)"
     ]
   }
 }
