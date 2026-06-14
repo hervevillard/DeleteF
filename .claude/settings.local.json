@@ -10,7 +10,22 @@
       "Bash(npm install *)",
       "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'chore: scaffold DeleteF extension \\(manifest, package, icons\\) *)",
       "Bash(npm test *)",
-      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'feat: add jitter delay helper with tests *)"
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'feat: add jitter delay helper with tests *)",
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'feat: add matchByText helper with tests *)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "WebSearch",
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'feat: add bounded waitFor helper with tests *)",
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'feat: add resolveSelector helper with tests *)",
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'feat: add redactStructure and parseSelectorResponse helpers for AI fallback *)",
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('manifest.json','utf8'\\)\\); console.log\\('manifest OK'\\)\")",
+      "Bash(node --check options.js)",
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'feat: add options page for DeepSeek AI-fallback settings *)",
+      "Bash(node --check background.js)",
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'feat: add DeepSeek ASK_AI handler in background worker *)",
+      "Bash(node --check content.js)",
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'feat: content script panel + deletion loop with DeepSeek AI fallback *)",
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'docs: add README + DEPLOY and document DeepSeek AI fallback in spec/plan *)",
+      "Bash(node --check lib/dom-helpers.js)"
     ]
   }
 }
