@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { JSDOM } = require('jsdom');
-const { jitter, matchByText } = require('../lib/dom-helpers.js');
+const { jitter, matchByText, waitFor } = require('../lib/dom-helpers.js');
 
 test('jitter returns an integer within [min, max]', () => {
   for (let i = 0; i < 200; i++) {
@@ -33,4 +33,20 @@ test('matchByText returns null when nothing matches', () => {
   const dom = new JSDOM(`<div>hello</div>`);
   const nodes = dom.window.document.querySelectorAll('div');
   assert.equal(matchByText(nodes, ['delete']), null);
+});
+
+test('waitFor resolves with the truthy value once the condition holds', async () => {
+  let flips = 0;
+  const value = await waitFor(() => (++flips >= 3 ? 'ready' : null), {
+    timeout: 1000,
+    interval: 10,
+  });
+  assert.equal(value, 'ready');
+});
+
+test('waitFor rejects on timeout', async () => {
+  await assert.rejects(
+    () => waitFor(() => false, { timeout: 50, interval: 10 }),
+    /timed out/i
+  );
 });
