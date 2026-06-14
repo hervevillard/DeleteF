@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>DeleteF — Settings</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        max-width: 560px;
+        margin: 24px auto;
+        padding: 0 16px;
+        color: #1c1e21;
+      }
+      h1 { font-size: 18px; }
+      label { display: block; font-weight: 600; margin: 16px 0 6px; }
+      input[type="text"], input[type="password"], select {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #ccd0d5;
+        border-radius: 6px;
+        font-size: 14px;
+      }
+      .row { display: flex; gap: 8px; align-items: center; }
+      .row input { flex: 1; }
+      button {
+        margin-top: 16px;
+        padding: 9px 16px;
+        border: none;
+        border-radius: 6px;
+        background: #1877f2;
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .note {
+        background: #fff3cd;
+        border: 1px solid #ffe69c;
+        border-radius: 6px;
+        padding: 10px 12px;
+        font-size: 13px;
+        margin-top: 16px;
+      }
+      .status { margin-top: 12px; font-weight: 600; color: #2e7d32; min-height: 18px; }
+      small { color: #606770; }
+    </style>
+  </head>
+  <body>
+    <h1>DeleteF — AI fallback settings</h1>
+    <p>
+      DeleteF works without AI. If you provide a DeepSeek API key, the extension will
+      <strong>only</strong> call DeepSeek when its built-in selectors fail to find a button,
+      to recover automatically. It sends a <strong>redacted</strong> snapshot of the page
+      structure (tags, roles, aria-labels) — <strong>not</strong> contact names or message text.
+    </p>
+
+    <label for="enabled">Enable AI fallback</label>
+    <select id="enabled">
+      <option value="false">Off (no network calls — default)</option>
+      <option value="true">On (use DeepSeek when selectors fail)</option>
+    </select>
+
+    <label for="apiKey">DeepSeek API key</label>
+    <div class="row">
+      <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+      <button id="toggleKey" type="button" title="Show/hide">👁</button>
+    </div>
+    <small>Stored locally in this browser only (browser.storage.local). Never sent anywhere except to DeepSeek when the AI fallback runs.</small>
+
+    <label for="model">Model</label>
+    <select id="model">
+      <option value="deepseek-chat">deepseek-chat (fast, cheap — recommended)</option>
+      <option value="deepseek-reasoner">deepseek-reasoner (slower, stronger reasoning)</option>
+    </select>
+
+    <div class="note">
+      ⚠️ Enabling AI sends a redacted page structure to DeepSeek (a third-party API). Leave it
+      Off if you want the extension to make zero network calls.
+    </div>
+
+    <button id="save" type="button">Save</button>
+    <div class="status" id="status"></div>
+
+    <script src="options.js"></script>
+  </body>
+</html>
