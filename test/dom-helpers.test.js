@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { JSDOM } = require('jsdom');
-const { jitter, matchByText, waitFor } = require('../lib/dom-helpers.js');
+const { jitter, matchByText, waitFor, resolveSelector } = require('../lib/dom-helpers.js');
 
 test('jitter returns an integer within [min, max]', () => {
   for (let i = 0; i < 200; i++) {
@@ -49,4 +49,33 @@ test('waitFor rejects on timeout', async () => {
     () => waitFor(() => false, { timeout: 50, interval: 10 }),
     /timed out/i
   );
+});
+
+test('resolveSelector tries strategies in order, returns first match', () => {
+  const dom = new JSDOM(`<div id="root">
+    <span class="x_legacy">legacy</span>
+    <a role="row">first row</a>
+  </div>`);
+  const root = dom.window.document.getElementById('root');
+  const node = resolveSelector(root, [
+    (r) => r.querySelector('[role="row"]'),
+    '.x_legacy',
+  ]);
+  assert.equal(node.textContent, 'first row');
+});
+
+test('resolveSelector falls back to later strategies', () => {
+  const dom = new JSDOM(`<div id="root"><span class="x_legacy">legacy</span></div>`);
+  const root = dom.window.document.getElementById('root');
+  const node = resolveSelector(root, [
+    (r) => r.querySelector('[role="row"]'),
+    '.x_legacy',
+  ]);
+  assert.equal(node.textContent, 'legacy');
+});
+
+test('resolveSelector returns null when no strategy matches', () => {
+  const dom = new JSDOM(`<div id="root"></div>`);
+  const root = dom.window.document.getElementById('root');
+  assert.equal(resolveSelector(root, ['.nope', (r) => r.querySelector('em')]), null);
 });
