@@ -5,7 +5,12 @@
       "Bash(git init *)",
       "Bash(git add *)",
       "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'Add design spec for DeleteF Firefox extension *)",
-      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'Add implementation plan for DeleteF extension *)"
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'Add implementation plan for DeleteF extension *)",
+      "Bash(node -e \"const fs=require\\('fs'\\);const z=require\\('zlib'\\);function png\\(s\\){const sig=Buffer.from\\([137,80,78,71,13,10,26,10]\\);function chunk\\(t,d\\){const len=Buffer.alloc\\(4\\);len.writeUInt32BE\\(d.length\\);const td=Buffer.concat\\([Buffer.from\\(t\\),d]\\);const crcTable=[];for\\(let n=0;n<256;n++\\){let c=n;for\\(let k=0;k<8;k++\\)c=c&1?0xedb88320^\\(c>>>1\\):c>>>1;crcTable[n]=c>>>0;}let crc=0xffffffff;for\\(const b of td\\)crc=crcTable[\\(crc^b\\)&0xff]^\\(crc>>>8\\);crc=\\(crc^0xffffffff\\)>>>0;const cb=Buffer.alloc\\(4\\);cb.writeUInt32BE\\(crc>>>0\\);return Buffer.concat\\([len,td,cb]\\);}const ihdr=Buffer.alloc\\(13\\);ihdr.writeUInt32BE\\(s,0\\);ihdr.writeUInt32BE\\(s,4\\);ihdr[8]=8;ihdr[9]=2;const row=Buffer.concat\\([Buffer.from\\([0]\\),Buffer.concat\\(Array.from\\({length:s},\\(\\)=>Buffer.from\\([210,63,87]\\)\\)\\)]\\);const raw=Buffer.concat\\(Array.from\\({length:s},\\(\\)=>row\\)\\);const idat=z.deflateSync\\(raw\\);return Buffer.concat\\([sig,chunk\\('IHDR',ihdr\\),chunk\\('IDAT',idat\\),chunk\\('IEND',Buffer.alloc\\(0\\)\\)]\\);}fs.writeFileSync\\('icons/icon-48.png',png\\(48\\)\\);fs.writeFileSync\\('icons/icon-96.png',png\\(96\\)\\);console.log\\('icons written'\\);\")",
+      "Bash(npm install *)",
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'chore: scaffold DeleteF extension \\(manifest, package, icons\\) *)",
+      "Bash(npm test *)",
+      "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'feat: add jitter delay helper with tests *)"
     ]
   }
 }
