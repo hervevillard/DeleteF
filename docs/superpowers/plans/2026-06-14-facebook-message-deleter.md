@@ -8,6 +8,16 @@
 
 **Tech Stack:** JavaScript (no build step), Firefox Manifest V3, `node:test` + `node:assert`, `jsdom` for DOM fixtures.
 
+> **Amendment (2026-06-14):** An optional **DeepSeek AI fallback** was added after the
+> initial plan (user request). It is fallback-only (used when heuristic selectors fail),
+> off by default, and sends only a **redacted** structure (no contact names/message text).
+> New pieces: `redactStructure` + `parseSelectorResponse` helpers (TDD), an options page
+> (`options.html`/`options.js`) storing `{aiEnabled, deepseekApiKey, deepseekModel}` in
+> `browser.storage.local`, a DeepSeek `ASK_AI` handler in `background.js`, and AI wiring in
+> `content.js` (`tagElements`, `deriveStableSelector`, `findWithAi`, session selector cache).
+> Manifest gains `storage` permission, `host_permissions` for `api.deepseek.com`, and
+> `options_ui`. See the design spec §4.4 for the full description.
+
 ---
 
 ## File Structure

@@ -27,8 +27,10 @@ it operates only on the user's own logged-in session.
 | R6 | Operate on `https://www.facebook.com/messages/*`. |
 | R7 | Installable as a **temporary unsigned add-on** via `about:debugging` (MV3 for Firefox). |
 | R8 | A one-time confirmation warns that deletion is permanent and irreversible. |
-| R9 | The extension sends no data anywhere; no network or storage permissions. |
+| R9 | With the AI fallback OFF (default), the extension sends no data anywhere. |
 | R10 | Build and deployment fully documented (README.md + DEPLOY.md + inline comments). |
+| R11 | Optional DeepSeek AI fallback: used ONLY when built-in selectors fail. Off unless enabled AND a key is set. |
+| R12 | When the AI fallback runs, only a REDACTED structure (tags/roles/aria-labels, no visible text) is sent to DeepSeek. |
 
 ### Non-goals (YAGNI)
 
@@ -106,6 +108,32 @@ Side-effect-free, unit-testable functions:
 Centralized config object `LABELS` (default English: More/Menu, "Delete chat", "Delete")
 lives at the top of `content.js` so wording/layout updates are a one-line edit.
 
+## 4.4 Optional DeepSeek AI fallback (added 2026-06-14)
+
+When the heuristic finders fail, an optional AI fallback recovers automatically.
+
+- **Trigger:** fallback-only. Invoked only when `matchByText`/`resolveSelector` return
+  null for a step (open menu / delete item / confirm). Off unless the user enables it in
+  settings **and** has saved a DeepSeek API key.
+- **Data egress (redacted only):** `redactStructure(container)` serializes the container's
+  structure — tag names, `role`, `aria-label`, `type`, first class — and assigns each
+  element a `data-df="N"` index. **Visible text (contact names, message previews) is
+  stripped.** This redacted string is the only thing sent.
+- **Where the call runs:** `background.js` (not the content script — Facebook's page CSP
+  blocks cross-origin requests from content scripts). The content script tags live nodes
+  with the same `data-df` indices, sends `{target, structure}` to the background via
+  `runtime.sendMessage({type:'ASK_AI'})`, and the background calls DeepSeek's
+  OpenAI-compatible endpoint `https://api.deepseek.com/chat/completions` with
+  `response_format: json_object`.
+- **Response handling:** DeepSeek returns `{"selector": "[data-df=\"N\"]"}`;
+  `parseSelectorResponse` extracts it (tolerating code fences/prose). The content script
+  resolves it against the tagged DOM, then derives and **caches a stable selector**
+  (aria-label/role/class) per target for the session, so DeepSeek is called at most a few
+  times rather than per conversation.
+- **Config & storage:** an options page (`options.html`/`options.js`) stores
+  `{aiEnabled, deepseekApiKey, deepseekModel}` in `browser.storage.local`. Requires the
+  `storage` permission and `host_permissions: ["https://api.deepseek.com/*"]`.
+
 ## 5. Resilience & safety
 
 - **Selector strategy:** ordered candidates, ARIA/role/text first, CSS-class fallbacks
@@ -131,11 +159,13 @@ The live-DOM click loop cannot be reliably unit-tested, so tests cover the **pur
 ```
 DeleteF/
 ├── manifest.json
-├── background.js
-├── content.js          # panel injection + deletion loop
+├── background.js       # panel toggle + DeepSeek AI-fallback call
+├── content.js          # panel injection + deletion loop + AI fallback wiring
 ├── panel.css
+├── options.html        # AI-fallback settings page
+├── options.js          # loads/saves settings to browser.storage.local
 ├── lib/
-│   └── dom-helpers.js   # pure, testable helpers
+│   └── dom-helpers.js   # pure, testable helpers (incl. redactStructure, parseSelectorResponse)
 ├── icons/              # 48px / 96px toolbar icons
 ├── test/
 │   └── dom-helpers.test.js
