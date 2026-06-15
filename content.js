@@ -40,6 +40,8 @@
     '[role="button"], [role="menuitem"], [role="option"], button, a[href], [aria-haspopup="menu"], [tabindex]:not([tabindex="-1"])';
   const STRICT_ACTIONABLE_SELECTOR =
     '[role="button"], [role="menuitem"], [role="option"], button, a[href], [aria-haspopup="menu"]';
+  const DIALOG_CONFIRM_SELECTOR =
+    '[role="button"], [role="menuitem"], [role="option"], button, a[href], [tabindex]:not([tabindex="-1"])';
 
   const state = { running: false, deletedCount: 0, aiEnabled: false, finished: false, debug: false };
   const skippedRows = new WeakSet(); // rows with no "Delete chat" option (Marketplace, etc.)
@@ -547,7 +549,7 @@
   // like <h2>"Delete chat" can never be selected as a click target.
   function findDialogConfirmButton(dialog, candidates) {
     if (!dialog) return null;
-    const controls = Array.from(dialog.querySelectorAll(STRICT_ACTIONABLE_SELECTOR));
+    const controls = Array.from(dialog.querySelectorAll(DIALOG_CONFIRM_SELECTOR));
     if (!controls.length) return null;
 
     const labels = controls.map((el) => {
@@ -558,7 +560,7 @@
 
     const best = pickBestMatch(labels, candidates, { maxLen: 64 });
     if (best >= 0) {
-      const picked = asActionable(controls[best], dialog, STRICT_ACTIONABLE_SELECTOR);
+      const picked = asActionable(controls[best], dialog, DIALOG_CONFIRM_SELECTOR);
       if (picked) {
         debugLog(`findDialogConfirmButton(${candidates.join(' | ')}) via ranked match -> ${describeElement(picked)}`);
         return picked;
@@ -567,14 +569,14 @@
 
     const hit = matchByText(controls, candidates);
     if (hit) {
-      const picked = asActionable(hit, dialog, STRICT_ACTIONABLE_SELECTOR);
+      const picked = asActionable(hit, dialog, DIALOG_CONFIRM_SELECTOR);
       if (picked) {
         debugLog(`findDialogConfirmButton(${candidates.join(' | ')}) via text/aria contains -> ${describeElement(picked)}`);
         return picked;
       }
     }
 
-    return findElementByNormalizedText(dialog, candidates, STRICT_ACTIONABLE_SELECTOR);
+    return findElementByNormalizedText(dialog, candidates, DIALOG_CONFIRM_SELECTOR);
   }
 
   function waitForDialog() {
