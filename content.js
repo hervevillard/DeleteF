@@ -409,7 +409,7 @@
             new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true })
           );
           await sleep(400);
-          log('Skipped (no delete option).');
+          log('Skipped: ' + err.message);
         } else {
           log('Stopped: ' + err.message);
           setRunning(false);
