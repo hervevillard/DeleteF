@@ -325,18 +325,21 @@
 
   // Identify a conversation row by its "More options" (⋯) button.
   function rowFromMoreButton(btn) {
-    return btn.closest('[role="gridcell"]') || btn.closest('[role="row"]') || btn.parentElement;
+    return btn.closest('[role="gridcell"]') || btn.closest('[role="row"]');
   }
 
   function isConversationMoreButton(btn) {
     if (!btn) return false;
     const aria = (btn.getAttribute && btn.getAttribute('aria-label')) || '';
+    const ariaNorm = normalizeText(aria);
+    if (ariaNorm.includes('settings') || ariaNorm.includes('help')) return false;
     // Canonical Messenger conversation menu button text.
     if (nameFromAriaLabel(aria)) return true;
 
     const row = rowFromMoreButton(btn);
     if (!row) return false;
     // Structural fallback for locale/experiment text variants.
+    if (!(row.matches('[role="gridcell"], [role="row"]'))) return false;
     return !!row.querySelector('a[role="link"], a[href]');
   }
 
