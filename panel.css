@@ -52,6 +52,40 @@
   font-size: 12px;
   resize: vertical;
 }
+#deletef-panel .deletef-ai-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+#deletef-panel .deletef-ai-row input { margin: 0; }
+#deletef-panel .deletef-ai-fields { margin-bottom: 8px; }
+#deletef-panel .deletef-key-row { display: flex; gap: 6px; margin-bottom: 6px; }
+#deletef-panel .deletef-ai-key {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #ccd0d5;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+}
+#deletef-panel .deletef-ai-showkey {
+  border: 1px solid #ccd0d5;
+  background: #f0f2f5;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 0 8px;
+}
+#deletef-panel .deletef-ai-model {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #ccd0d5;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+}
 #deletef-panel .deletef-count { font-weight: 700; margin-bottom: 6px; }
 #deletef-panel .deletef-ai {
   font-size: 11px;

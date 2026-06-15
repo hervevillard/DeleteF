@@ -44,8 +44,10 @@
   const agentRows = new Map(); // id (string) -> row element
   let agentRowSeq = 0;
   let lastObserveRoot = null;
+  let lastObserveKind = 'none';
 
   let logEl, countEl, aiEl, startBtn, stopBtn, csvBtn, debugBtn, copyLogBtn, instrEl;
+  let aiToggleEl, aiKeyEl, aiModelEl, aiFieldsEl, showKeyBtn;
 
   function log(msg) {
     if (!logEl) return;
@@ -94,6 +96,20 @@
       </div>
       <textarea class="deletef-instr" rows="2"
         placeholder="Instructions (AI mode only). Empty = delete all. e.g. delete everyone except Mom"></textarea>
+      <label class="deletef-ai-row">
+        <input type="checkbox" class="deletef-ai-toggle" />
+        <span>Use AI (DeepSeek) — sends contact names to DeepSeek</span>
+      </label>
+      <div class="deletef-ai-fields" hidden>
+        <div class="deletef-key-row">
+          <input type="password" class="deletef-ai-key" placeholder="DeepSeek API key (sk-…)" autocomplete="off" />
+          <button type="button" class="deletef-ai-showkey" title="Show/hide key">👁</button>
+        </div>
+        <select class="deletef-ai-model">
+          <option value="deepseek-chat">deepseek-chat (fast, cheap)</option>
+          <option value="deepseek-reasoner">deepseek-reasoner (stronger)</option>
+        </select>
+      </div>
       <div class="deletef-count">Deleted: 0</div>
       <div class="deletef-ai"></div>
       <div class="deletef-log"></div>`;
@@ -108,6 +124,11 @@
     debugBtn = panel.querySelector('.deletef-debug');
     copyLogBtn = panel.querySelector('.deletef-copy-log');
     instrEl = panel.querySelector('.deletef-instr');
+    aiToggleEl = panel.querySelector('.deletef-ai-toggle');
+    aiKeyEl = panel.querySelector('.deletef-ai-key');
+    aiModelEl = panel.querySelector('.deletef-ai-model');
+    aiFieldsEl = panel.querySelector('.deletef-ai-fields');
+    showKeyBtn = panel.querySelector('.deletef-ai-showkey');
 
     panel.querySelector('.deletef-close').addEventListener('click', () => panel.remove());
     startBtn.addEventListener('click', onStart);
@@ -115,6 +136,12 @@
     csvBtn.addEventListener('click', downloadCsv);
     debugBtn.addEventListener('click', onToggleDebug);
     copyLogBtn.addEventListener('click', onCopyDebugLog);
+    aiToggleEl.addEventListener('change', saveAiConfig);
+    aiKeyEl.addEventListener('change', saveAiConfig);
+    aiModelEl.addEventListener('change', saveAiConfig);
+    showKeyBtn.addEventListener('click', () => {
+      aiKeyEl.type = aiKeyEl.type === 'password' ? 'text' : 'password';
+    });
 
     refreshAiStatus();
     log('Ready. Click Start to delete conversations.');
@@ -170,14 +197,47 @@
     else buildPanel();
   }
 
+  // Short status line under the controls, derived from current settings.
+  function aiStatusText(enabled, hasKey) {
+    if (!enabled) return 'AI: off (local heuristics, no network)';
+    return hasKey ? 'AI: agentic (DeepSeek)' : 'AI: on — but no API key set';
+  }
+
+  // Read settings from storage into state + the panel controls. Called on panel
+  // build and again at the start of each run so state.aiEnabled is authoritative.
   async function refreshAiStatus() {
+    let cfg = { aiEnabled: false, deepseekApiKey: '', deepseekModel: 'deepseek-chat' };
     try {
-      const cfg = await browser.storage.local.get({ aiEnabled: false });
-      state.aiEnabled = cfg.aiEnabled === true;
+      cfg = await browser.storage.local.get(cfg);
     } catch (err) {
-      state.aiEnabled = false;
+      /* keep defaults */
     }
-    if (aiEl) aiEl.textContent = state.aiEnabled ? 'AI: agentic (DeepSeek)' : 'AI: off (local heuristics)';
+    state.aiEnabled = cfg.aiEnabled === true;
+    if (aiToggleEl) aiToggleEl.checked = state.aiEnabled;
+    // Don't clobber the key field if the user is mid-edit.
+    if (aiKeyEl && document.activeElement !== aiKeyEl) aiKeyEl.value = cfg.deepseekApiKey || '';
+    if (aiModelEl) aiModelEl.value = cfg.deepseekModel || 'deepseek-chat';
+    if (aiFieldsEl) aiFieldsEl.hidden = !state.aiEnabled;
+    if (aiEl) aiEl.textContent = aiStatusText(state.aiEnabled, !!cfg.deepseekApiKey);
+  }
+
+  // Persist the in-panel AI controls to storage.local (the same keys background.js
+  // reads). Runs on every change so there's no separate Save button.
+  async function saveAiConfig() {
+    const payload = {
+      aiEnabled: aiToggleEl ? aiToggleEl.checked : false,
+      deepseekApiKey: aiKeyEl ? aiKeyEl.value.trim() : '',
+      deepseekModel: aiModelEl ? aiModelEl.value : 'deepseek-chat',
+    };
+    try {
+      await browser.storage.local.set(payload);
+    } catch (err) {
+      log('Could not save AI settings: ' + err.message);
+      return;
+    }
+    state.aiEnabled = payload.aiEnabled;
+    if (aiFieldsEl) aiFieldsEl.hidden = !payload.aiEnabled;
+    if (aiEl) aiEl.textContent = aiStatusText(payload.aiEnabled, !!payload.deepseekApiKey);
   }
 
   // ---------------------------- Run control ----------------------------
@@ -351,7 +411,10 @@
     return null;
   }
 
-  function clickElement(el) {
+  // Click like a human: hover, a beat, press, a beat, release, click — with small
+  // randomized gaps so React's pointer handlers fire in order and the control is
+  // interactive by the time the real `click` lands. Async; callers should await.
+  async function clickElement(el) {
     if (!el) return false;
     debugLog('click target -> ' + describeElement(el));
     try {
@@ -360,14 +423,23 @@
       /* ignore */
     }
     const opts = { bubbles: true, cancelable: true, view: window };
-    try {
-      el.dispatchEvent(new PointerEvent('pointerdown', opts));
-      el.dispatchEvent(new MouseEvent('mousedown', opts));
-      el.dispatchEvent(new PointerEvent('pointerup', opts));
-      el.dispatchEvent(new MouseEvent('mouseup', opts));
-    } catch (e) {
-      // PointerEvent may not exist in older contexts; click fallback below.
-    }
+    const pointer = (type) => {
+      try {
+        el.dispatchEvent(new PointerEvent(type, opts));
+      } catch (e) {
+        // PointerEvent may be unavailable in older contexts; mouse events still fire.
+      }
+    };
+    pointer('pointerover');
+    pointer('pointerenter');
+    el.dispatchEvent(new MouseEvent('mouseover', opts));
+    el.dispatchEvent(new MouseEvent('mouseenter', opts));
+    await sleep(jitter(60, 160));
+    pointer('pointerdown');
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    await sleep(jitter(50, 130));
+    pointer('pointerup');
+    el.dispatchEvent(new MouseEvent('mouseup', opts));
     el.click();
     return true;
   }
@@ -397,18 +469,95 @@
     return picked;
   }
 
+  function normalizeText(s) {
+    return String(s || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  function isVisible(el) {
+    if (!el || !el.isConnected) return false;
+    const cs = window.getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 2 && r.height > 2;
+  }
+
+  // Fallback used mostly for confirm dialogs where actionable nodes sometimes
+  // have weak role/aria semantics.
+  function findElementByNormalizedText(scope, candidates) {
+    const wants = (candidates || []).map(normalizeText).filter(Boolean);
+    if (!wants.length) return null;
+
+    const all = Array.from(scope.querySelectorAll('*'));
+    const shortNodes = [];
+    const labels = [];
+    for (const el of all) {
+      const text = normalizeText(el.textContent);
+      if (!text || text.length > 64) continue;
+      shortNodes.push(el);
+      labels.push(text);
+    }
+
+    const best = pickBestMatch(labels, wants, { maxLen: 64 });
+    if (best >= 0) {
+      const picked = nearestActionable(shortNodes[best], scope);
+      debugLog(`findElementByNormalizedText(${wants.join(' | ')}) -> ${describeElement(picked)}`);
+      return picked;
+    }
+    return null;
+  }
+
+  function waitForDialog() {
+    return waitFor(
+      () => {
+        const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]')).filter(isVisible);
+        if (!dialogs.length) return null;
+        return dialogs[dialogs.length - 1];
+      },
+      { timeout: 6000, interval: 150 }
+    ).catch(() => null);
+  }
+
+  function rootText(root) {
+    if (!root) return '';
+    const aria = root.getAttribute ? (root.getAttribute('aria-label') || '') : '';
+    return normalizeText((root.textContent || '') + ' ' + aria);
+  }
+
+  function isDeleteRecoveryRoot(root) {
+    const t = rootText(root);
+    if (!t) return false;
+    return (
+      t.includes('delete') ||
+      t.includes('delete chat') ||
+      t.includes('remove') ||
+      t.includes('cancel') ||
+      t.includes('confirm') ||
+      t.includes('are you sure')
+    );
+  }
+
+  function isDeleteRecoveryElement(el) {
+    const t = rootText(el);
+    if (!t) return false;
+    return (
+      t.includes('delete') ||
+      t.includes('delete chat') ||
+      t.includes('remove') ||
+      t.includes('cancel') ||
+      t.includes('confirm') ||
+      t.includes('close') ||
+      t.includes('more options')
+    );
+  }
+
   // After clicking the "⋯" button, wait for its menu. Polls for BOTH the
   // aria-controls target AND a role="menu"/"listbox" popup — Facebook's
   // aria-controls value often does not match the mounted menu's id.
   function waitForMenu(moreBtn) {
     const menuId = moreBtn && moreBtn.getAttribute('aria-controls');
-    const isVisible = (el) => {
-      if (!el || !el.isConnected) return false;
-      const cs = window.getComputedStyle(el);
-      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
-      const r = el.getBoundingClientRect();
-      return r.width > 2 && r.height > 2;
-    };
     return waitFor(
       () => {
         const controlled = menuId && document.getElementById(menuId);
@@ -497,31 +646,48 @@
       row.querySelector('[aria-haspopup="menu"][aria-controls]') || findElement(row, LABELS.moreMenu);
     if (!moreBtn) throw new DeleteError('no_more_button', 'Could not find the "More" (⋯) menu on this row.');
     debugLog('performDelete moreBtn -> ' + describeElement(moreBtn));
-    clickElement(nearestActionable(moreBtn, row));
+    await clickElement(nearestActionable(moreBtn, row));
 
-    // 2. Click "Delete chat" in the opened menu.
+    // 2. Click "Delete chat" in the opened menu (let it settle so items render).
     const menuRoot = await waitForMenu(moreBtn);
     if (!menuRoot) throw new DeleteError('no_menu', 'The "More options" menu did not appear.');
+    await sleep(jitter(250, 500));
     const deleteHit = findElement(menuRoot, LABELS.deleteChat);
     if (!deleteHit) {
       throw new DeleteError('no_delete_option', 'No "Delete chat" item in this row\'s menu.', menuItemsText(menuRoot));
     }
     debugLog('performDelete deleteHit -> ' + describeElement(deleteHit));
-    clickElement(nearestActionable(deleteHit, menuRoot));
+    await clickElement(nearestActionable(deleteHit, menuRoot));
 
-    // 3. Confirm in the dialog.
-    const dialog = await waitFor(() => document.querySelector('[role="dialog"], [role="alertdialog"]'), {
-      timeout: 6000,
-      interval: 150,
-    }).catch(() => null);
+    // 3. Confirm in the dialog. Pause first: the dialog animates in and its button
+    //    is not interactive on the same frame it mounts — clicking too early no-ops.
+    const dialog = await waitForDialog();
     if (!dialog) throw new DeleteError('no_dialog', 'The confirm dialog did not appear.');
-    const confirmBtn = findElement(dialog, LABELS.confirmDelete);
+    await sleep(jitter(400, 800));
+    let confirmBtn = findElement(dialog, LABELS.confirmDelete);
+    if (!confirmBtn) {
+      debugLog('confirm lookup fallback: dialog text="' + normalizeText(dialog.textContent).slice(0, 120) + '"');
+      confirmBtn = findElementByNormalizedText(dialog, LABELS.confirmDelete);
+    }
     if (!confirmBtn) throw new DeleteError('no_confirm', 'Could not find the confirm "Delete" button.');
     debugLog('performDelete confirmBtn -> ' + describeElement(confirmBtn));
-    clickElement(nearestActionable(confirmBtn, dialog));
+    await clickElement(nearestActionable(confirmBtn, dialog));
 
-    // 4. Wait for the row to detach (deletion completed).
-    await waitFor(() => !row.isConnected, { timeout: 8000, interval: 150 });
+    // 4. Wait for the row to detach. If it doesn't, the first confirm click likely
+    //    landed before the button was wired — re-find the dialog and click once more.
+    try {
+      await waitFor(() => !row.isConnected, { timeout: 5000, interval: 150 });
+    } catch (e) {
+      const retryDialog = await waitForDialog();
+      let retryBtn = retryDialog && findElement(retryDialog, LABELS.confirmDelete);
+      if (!retryBtn && retryDialog) retryBtn = findElementByNormalizedText(retryDialog, LABELS.confirmDelete);
+      if (retryBtn) {
+        debugLog('performDelete retry confirm -> ' + describeElement(retryBtn));
+        await sleep(jitter(300, 600));
+        await clickElement(nearestActionable(retryBtn, retryDialog));
+      }
+      await waitFor(() => !row.isConnected, { timeout: 6000, interval: 150 });
+    }
     return true;
   }
 
@@ -558,7 +724,8 @@
           return;
         }
       }
-      await sleep(jitter(800, 1500));
+      // Human-scale pause between conversations.
+      await sleep(jitter(1500, 3500));
     }
   }
 
@@ -706,23 +873,59 @@
   }
 
   function toolObserve() {
-    const root =
-      document.querySelector('[role="dialog"], [role="alertdialog"]') ||
-      document.querySelector('[role="menu"], [role="listbox"]') ||
-      findChatList() ||
-      document.body;
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]')).filter(isVisible);
+    const menus = Array.from(document.querySelectorAll('[role="menu"], [role="listbox"]')).filter(isVisible);
+    let root = null;
+    let kind = 'none';
+
+    const deleteDialog = dialogs.find(isDeleteRecoveryRoot);
+    const deleteMenu = menus.find(isDeleteRecoveryRoot);
+    if (deleteDialog) {
+      root = deleteDialog;
+      kind = 'overlay';
+    } else if (deleteMenu) {
+      root = deleteMenu;
+      kind = 'overlay';
+    } else {
+      root = findChatList();
+      kind = root ? 'chatlist' : 'none';
+    }
+
+    if (!root) {
+      lastObserveRoot = null;
+      lastObserveKind = 'none';
+      return {
+        status: 'no_context',
+        detail: 'No dialog/menu/chat list available. Use list_conversations or delete_conversation.',
+      };
+    }
+
     lastObserveRoot = root;
+    lastObserveKind = kind;
     tagElements(root);
-    return { structure: redactStructure(root, { includeText: true }) };
+    return { kind, structure: redactStructure(root, { includeText: true }) };
   }
 
-  function toolClickElement(args) {
+  async function toolClickElement(args) {
     const df = String(args && args.df);
-    const root = lastObserveRoot || document;
+    const root = lastObserveRoot;
+    if (!root) return { ok: false, detail: 'No observe context. Call observe first.' };
+    if (lastObserveKind !== 'overlay') {
+      return {
+        ok: false,
+        detail: 'click_element is restricted to delete-recovery dialogs/menus. Use delete_conversation for normal actions.',
+      };
+    }
     const el = root.querySelector(`[data-df="${df}"]`);
     if (!el) return { ok: false, detail: 'No element with that data-df. Call observe first.' };
+    if (!isDeleteRecoveryElement(el)) {
+      return {
+        ok: false,
+        detail: 'Blocked click: target is not delete-recovery related.',
+      };
+    }
     debugLog('tool click_element df=' + df + ' -> ' + describeElement(el));
-    clickElement(nearestActionable(el, root));
+    await clickElement(nearestActionable(el, root));
     return { ok: true };
   }
 
@@ -778,6 +981,7 @@
     agentRows.clear();
     agentRowSeq = 0;
     lastObserveRoot = null;
+    lastObserveKind = 'none';
     state.finished = false;
 
     const task =
