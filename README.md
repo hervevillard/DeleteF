@@ -22,32 +22,34 @@ other person.
   survives Facebook's frequent markup changes. All match strings live in the `LABELS`
   object at the top of `content.js`.
 
-### Optional: DeepSeek AI fallback
+### Optional: DeepSeek Agentic Mode
 
-By default the extension makes **no network calls at all**. You can optionally enable a
-**DeepSeek AI fallback** that activates **only when the built-in selectors fail** (e.g.
-after a Facebook redesign):
+By default the extension makes **no network calls at all**. You can optionally enable
+**AI mode** so DeepSeek runs a tool-calling agent that drives deletion end-to-end
+(including selective deletion from your instruction text).
 
-1. The content script captures a **redacted** structure of the relevant container —
-   tag names, `role`, and `aria-label` only. **Visible text (contact names, message
-   previews) is stripped out** by `redactStructure` before anything leaves the browser.
-2. `background.js` sends that structure to DeepSeek's OpenAI-compatible API
-   (`https://api.deepseek.com/chat/completions`) and asks for a CSS selector identifying
-   the target button.
-3. The returned selector is used to click, and a stable form of it is **cached for the
-   session** so DeepSeek is called at most a handful of times — not per conversation.
+When AI is on:
+
+1. `content.js` runs an agent loop with tools (`list_conversations`,
+  `delete_conversation`, `scroll_conversation_list`, `observe`, `click_element`,
+  `finish`).
+2. `background.js` proxies each model turn to DeepSeek's OpenAI-compatible API
+  (`https://api.deepseek.com/chat/completions`) because Facebook CSP blocks
+  cross-origin fetches from content scripts.
+3. The model may receive conversation names and visible UI text so it can decide
+  what to delete and recover from UI changes.
 
 Enable it on the extension's **Settings** page (Add-ons Manager → DeleteF → Preferences),
 where you paste your DeepSeek API key and pick a model (`deepseek-chat` recommended). The
-key is stored in `browser.storage.local` on your machine and is only ever sent to DeepSeek.
+key is stored in `browser.storage.local` on your machine and is only sent to DeepSeek.
 
-> The AI fallback is **off** unless you turn it on AND provide a key.
+> AI mode is **off** unless you turn it on AND provide a key.
 
 ## Data & privacy
 
 - With AI **off** (default): the extension sends data to **no one**.
-- With AI **on**: only a **redacted, text-free** page structure is sent to DeepSeek, and
-  only when a selector fails. Contact names and message contents are never sent.
+- With AI **on**: conversation names and visible UI text can be sent to DeepSeek so the
+  agent can decide what to delete and recover from failures.
 
 ## Risks & limitations
 

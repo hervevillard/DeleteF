@@ -26,7 +26,8 @@
       "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'feat: content script panel + deletion loop with DeepSeek AI fallback *)",
       "Bash(git -c user.name=Claude -c user.email=noreply@anthropic.com commit -q -m 'docs: add README + DEPLOY and document DeepSeek AI fallback in spec/plan *)",
       "Bash(node --check lib/dom-helpers.js)",
-      "Bash(node --test)"
+      "Bash(node --test)",
+      "Bash(node --test test/dom-helpers.test.js)"
     ]
   }
 }

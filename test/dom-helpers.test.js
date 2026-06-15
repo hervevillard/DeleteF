@@ -4,12 +4,14 @@ const { JSDOM } = require('jsdom');
 const {
   jitter,
   matchByText,
+  pickBestMatch,
   waitFor,
   resolveSelector,
   redactStructure,
   parseSelectorResponse,
   nameFromAriaLabel,
   toCsv,
+  nearestActionable,
 } = require('../lib/dom-helpers.js');
 
 test('jitter returns an integer within [min, max]', () => {
@@ -42,6 +44,36 @@ test('matchByText returns null when nothing matches', () => {
   const dom = new JSDOM(`<div>hello</div>`);
   const nodes = dom.window.document.querySelectorAll('div');
   assert.equal(matchByText(nodes, ['delete']), null);
+});
+
+test('pickBestMatch prefers an exact button label over a longer container', () => {
+  // A confirm dialog: the body text contains "delete", but the real button is exactly "Delete".
+  const texts = ['Are you sure you want to delete this chat?', 'Cancel', 'Delete'];
+  assert.equal(pickBestMatch(texts, ['delete chat', 'delete']), 2);
+});
+
+test('pickBestMatch matches "Delete chat" exactly when present', () => {
+  const texts = ['Cancel', 'Delete chat'];
+  assert.equal(pickBestMatch(texts, ['delete chat', 'delete']), 1);
+});
+
+test('pickBestMatch falls back to a bounded contains match', () => {
+  const texts = ['Mark as read', 'Delete chat now'];
+  // No exact match; "Delete chat now" contains "delete chat" and is short enough.
+  assert.equal(pickBestMatch(texts, ['delete chat']), 1);
+});
+
+test('pickBestMatch rejects an over-long contains match (a container, not a button)', () => {
+  const texts = ['Are you sure you want to delete this conversation permanently? This cannot be undone.'];
+  assert.equal(pickBestMatch(texts, ['delete']), -1);
+});
+
+test('pickBestMatch is case-insensitive and trims', () => {
+  assert.equal(pickBestMatch(['  DELETE  '], ['delete']), 0);
+});
+
+test('pickBestMatch returns -1 when nothing matches', () => {
+  assert.equal(pickBestMatch(['Cancel', 'Archive'], ['delete']), -1);
 });
 
 test('waitFor resolves with the truthy value once the condition holds', async () => {
@@ -191,4 +223,20 @@ test('toCsv handles empty / missing input', () => {
   assert.equal(toCsv([]), 'Name');
   assert.equal(toCsv(undefined), 'Name');
   assert.equal(toCsv([{}]), 'Name\r\n');
+});
+
+test('nearestActionable promotes a nested text holder to menuitem parent', () => {
+  const dom = new JSDOM(`<div role="menu"><div role="menuitem"><span>Delete chat</span></div></div>`);
+  const menu = dom.window.document.querySelector('[role="menu"]');
+  const span = dom.window.document.querySelector('span');
+  const out = nearestActionable(span, menu);
+  assert.equal(out.getAttribute('role'), 'menuitem');
+});
+
+test('nearestActionable promotes nested span to button ancestor', () => {
+  const dom = new JSDOM(`<div role="dialog"><button><span>Delete</span></button></div>`);
+  const dialog = dom.window.document.querySelector('[role="dialog"]');
+  const span = dom.window.document.querySelector('span');
+  const out = nearestActionable(span, dialog);
+  assert.equal(out.tagName.toLowerCase(), 'button');
 });

@@ -14,7 +14,17 @@
 (function () {
   'use strict';
 
-  const { jitter, matchByText, waitFor, resolveSelector, redactStructure, nameFromAriaLabel, toCsv } =
+  const {
+    jitter,
+    matchByText,
+    pickBestMatch,
+    waitFor,
+    resolveSelector,
+    redactStructure,
+    nameFromAriaLabel,
+    toCsv,
+    nearestActionable,
+  } =
     globalThis.DeleteF;
 
   // ---- Centralized config: update these when Facebook changes wording/markup. ----
@@ -27,7 +37,7 @@
 
   const MAX_ITERATIONS = 100; // agent loop / cost backstop
 
-  const state = { running: false, deletedCount: 0, aiEnabled: false, finished: false };
+  const state = { running: false, deletedCount: 0, aiEnabled: false, finished: false, debug: false };
   const skippedRows = new WeakSet(); // rows with no "Delete chat" option (Marketplace, etc.)
 
   // Agent state: stable row identity + last-observed root for click_element.
@@ -35,7 +45,7 @@
   let agentRowSeq = 0;
   let lastObserveRoot = null;
 
-  let logEl, countEl, aiEl, startBtn, stopBtn, csvBtn, instrEl;
+  let logEl, countEl, aiEl, startBtn, stopBtn, csvBtn, debugBtn, copyLogBtn, instrEl;
 
   function log(msg) {
     if (!logEl) return;
@@ -44,6 +54,22 @@
     logEl.appendChild(line);
     logEl.scrollTop = logEl.scrollHeight;
     while (logEl.childNodes.length > 50) logEl.removeChild(logEl.firstChild);
+  }
+
+  function debugLog(msg) {
+    if (!state.debug) return;
+    log('[debug] ' + msg);
+  }
+
+  function describeElement(el) {
+    if (!el) return '(null)';
+    const tag = (el.tagName || '').toLowerCase() || '?';
+    const role = el.getAttribute && el.getAttribute('role');
+    const aria = el.getAttribute && el.getAttribute('aria-label');
+    const id = el.id ? '#' + el.id : '';
+    const cls = el.classList && el.classList[0] ? '.' + el.classList[0] : '';
+    const text = ((el.textContent || '').trim() || '').slice(0, 42);
+    return `${tag}${id}${cls}${role ? ` role=${role}` : ''}${aria ? ` aria="${aria}"` : ''}${text ? ` text="${text}"` : ''}`;
   }
 
   function updateCount() {
@@ -63,6 +89,8 @@
         <button class="deletef-action deletef-start">Start</button>
         <button class="deletef-action deletef-stop" disabled>Stop</button>
         <button class="deletef-action deletef-csv">Download CSV</button>
+        <button class="deletef-action deletef-debug">Debug: Off</button>
+        <button class="deletef-action deletef-copy-log">Copy Debug Log</button>
       </div>
       <textarea class="deletef-instr" rows="2"
         placeholder="Instructions (AI mode only). Empty = delete all. e.g. delete everyone except Mom"></textarea>
@@ -77,16 +105,63 @@
     startBtn = panel.querySelector('.deletef-start');
     stopBtn = panel.querySelector('.deletef-stop');
     csvBtn = panel.querySelector('.deletef-csv');
+    debugBtn = panel.querySelector('.deletef-debug');
+    copyLogBtn = panel.querySelector('.deletef-copy-log');
     instrEl = panel.querySelector('.deletef-instr');
 
     panel.querySelector('.deletef-close').addEventListener('click', () => panel.remove());
     startBtn.addEventListener('click', onStart);
     stopBtn.addEventListener('click', onStop);
     csvBtn.addEventListener('click', downloadCsv);
+    debugBtn.addEventListener('click', onToggleDebug);
+    copyLogBtn.addEventListener('click', onCopyDebugLog);
 
     refreshAiStatus();
     log('Ready. Click Start to delete conversations.');
     return panel;
+  }
+
+  function onToggleDebug() {
+    state.debug = !state.debug;
+    if (debugBtn) debugBtn.textContent = state.debug ? 'Debug: On' : 'Debug: Off';
+    log(state.debug ? 'Debug logging enabled.' : 'Debug logging disabled.');
+  }
+
+  async function onCopyDebugLog() {
+    if (!logEl) return;
+    const lines = Array.from(logEl.childNodes)
+      .map((n) => (n.textContent || '').trim())
+      .filter(Boolean);
+    const debugLines = lines.filter((line) => line.startsWith('[debug]'));
+    const payload = (debugLines.length ? debugLines : lines).join('\n');
+    if (!payload) {
+      log('No log lines to copy yet.');
+      return;
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(payload);
+        log(`Copied ${debugLines.length || lines.length} log line(s) to clipboard.`);
+        return;
+      }
+      throw new Error('Clipboard API unavailable.');
+    } catch (err) {
+      // Fallback for contexts where navigator.clipboard is unavailable.
+      const ta = document.createElement('textarea');
+      ta.value = payload;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      if (ok) {
+        log(`Copied ${debugLines.length || lines.length} log line(s) to clipboard.`);
+      } else {
+        log('Could not copy log to clipboard.');
+      }
+    }
   }
 
   function togglePanel() {
@@ -276,15 +351,50 @@
     return null;
   }
 
+  function clickElement(el) {
+    if (!el) return false;
+    debugLog('click target -> ' + describeElement(el));
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    } catch (e) {
+      /* ignore */
+    }
+    const opts = { bubbles: true, cancelable: true, view: window };
+    try {
+      el.dispatchEvent(new PointerEvent('pointerdown', opts));
+      el.dispatchEvent(new MouseEvent('mousedown', opts));
+      el.dispatchEvent(new PointerEvent('pointerup', opts));
+      el.dispatchEvent(new MouseEvent('mouseup', opts));
+    } catch (e) {
+      // PointerEvent may not exist in older contexts; click fallback below.
+    }
+    el.click();
+    return true;
+  }
+
   // Local, synchronous element finder: aria/role/text contains-match first, then
   // an exact-text deep match. No network, no AI.
   function findElement(scope, candidates) {
-    const hit = matchByText(
-      scope.querySelectorAll('[role="button"], [role="menuitem"], button, [aria-label]'),
-      candidates
+    const nodes = Array.from(
+      scope.querySelectorAll('[role="button"], [role="menuitem"], [role="option"], button, a, [aria-label], [tabindex]')
     );
-    if (hit) return hit;
-    return findByText(scope, candidates);
+    const labels = nodes.map((n) => ((n.textContent || '').trim() || (n.getAttribute && n.getAttribute('aria-label')) || '').trim());
+    const best = pickBestMatch(labels, candidates, { maxLen: 64 });
+    if (best >= 0) {
+      const picked = nearestActionable(nodes[best], scope);
+      debugLog(`findElement(${candidates.join(' | ')}) via ranked match -> ${describeElement(picked)}`);
+      return picked;
+    }
+
+    const hit = matchByText(nodes, candidates);
+    if (hit) {
+      const picked = nearestActionable(hit, scope);
+      debugLog(`findElement(${candidates.join(' | ')}) via text/aria contains -> ${describeElement(picked)}`);
+      return picked;
+    }
+    const picked = nearestActionable(findByText(scope, candidates), scope);
+    debugLog(`findElement(${candidates.join(' | ')}) via exact fallback -> ${describeElement(picked)}`);
+    return picked;
   }
 
   // After clicking the "⋯" button, wait for its menu. Polls for BOTH the
@@ -292,11 +402,44 @@
   // aria-controls value often does not match the mounted menu's id.
   function waitForMenu(moreBtn) {
     const menuId = moreBtn && moreBtn.getAttribute('aria-controls');
+    const isVisible = (el) => {
+      if (!el || !el.isConnected) return false;
+      const cs = window.getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 2 && r.height > 2;
+    };
     return waitFor(
-      () =>
-        (menuId && document.getElementById(menuId)) ||
-        document.querySelector('[role="menu"]') ||
-        document.querySelector('[role="listbox"]'),
+      () => {
+        const controlled = menuId && document.getElementById(menuId);
+        if (isVisible(controlled)) {
+          debugLog('waitForMenu -> using aria-controls target ' + describeElement(controlled));
+          return controlled;
+        }
+
+        const cands = Array.from(document.querySelectorAll('[role="menu"], [role="listbox"]')).filter(isVisible);
+        if (!cands.length) return null;
+
+        if (moreBtn && typeof moreBtn.getBoundingClientRect === 'function') {
+          const b = moreBtn.getBoundingClientRect();
+          let best = null;
+          let bestDist = Infinity;
+          for (const c of cands) {
+            const r = c.getBoundingClientRect();
+            const dx = (r.left + r.width / 2) - (b.left + b.width / 2);
+            const dy = (r.top + r.height / 2) - (b.top + b.height / 2);
+            const d = Math.hypot(dx, dy);
+            if (d < bestDist) {
+              bestDist = d;
+              best = c;
+            }
+          }
+          if (best) return best;
+        }
+
+        if (cands[0]) debugLog('waitForMenu -> using nearest visible menu ' + describeElement(cands[0]));
+        return cands[0] || null;
+      },
       { timeout: 4000, interval: 100 }
     ).catch(() => null);
   }
@@ -347,12 +490,14 @@
   async function performDelete(row) {
     fireMouseEnter(row);
     await sleep(jitter(200, 400));
+    debugLog('performDelete row -> ' + describeElement(row));
 
     // 1. Open the "⋯" menu (structural selector first, text heuristic as backup).
     const moreBtn =
       row.querySelector('[aria-haspopup="menu"][aria-controls]') || findElement(row, LABELS.moreMenu);
     if (!moreBtn) throw new DeleteError('no_more_button', 'Could not find the "More" (⋯) menu on this row.');
-    moreBtn.click();
+    debugLog('performDelete moreBtn -> ' + describeElement(moreBtn));
+    clickElement(nearestActionable(moreBtn, row));
 
     // 2. Click "Delete chat" in the opened menu.
     const menuRoot = await waitForMenu(moreBtn);
@@ -361,7 +506,8 @@
     if (!deleteHit) {
       throw new DeleteError('no_delete_option', 'No "Delete chat" item in this row\'s menu.', menuItemsText(menuRoot));
     }
-    deleteHit.click();
+    debugLog('performDelete deleteHit -> ' + describeElement(deleteHit));
+    clickElement(nearestActionable(deleteHit, menuRoot));
 
     // 3. Confirm in the dialog.
     const dialog = await waitFor(() => document.querySelector('[role="dialog"], [role="alertdialog"]'), {
@@ -371,7 +517,8 @@
     if (!dialog) throw new DeleteError('no_dialog', 'The confirm dialog did not appear.');
     const confirmBtn = findElement(dialog, LABELS.confirmDelete);
     if (!confirmBtn) throw new DeleteError('no_confirm', 'Could not find the confirm "Delete" button.');
-    confirmBtn.click();
+    debugLog('performDelete confirmBtn -> ' + describeElement(confirmBtn));
+    clickElement(nearestActionable(confirmBtn, dialog));
 
     // 4. Wait for the row to detach (deletion completed).
     await waitFor(() => !row.isConnected, { timeout: 8000, interval: 150 });
@@ -574,11 +721,36 @@
     const root = lastObserveRoot || document;
     const el = root.querySelector(`[data-df="${df}"]`);
     if (!el) return { ok: false, detail: 'No element with that data-df. Call observe first.' };
-    el.click();
+    debugLog('tool click_element df=' + df + ' -> ' + describeElement(el));
+    clickElement(nearestActionable(el, root));
+    return { ok: true };
+  }
+
+  function parseToolArgs(raw) {
+    if (!raw) return { ok: true, args: {} };
+    try {
+      return { ok: true, args: JSON.parse(raw) };
+    } catch (e) {
+      return { ok: false, args: {}, error: 'Malformed tool arguments JSON.' };
+    }
+  }
+
+  function validateToolArgs(name, args) {
+    if (name === 'delete_conversation') {
+      if (!args || (typeof args.id !== 'number' && typeof args.id !== 'string')) {
+        return { ok: false, detail: 'delete_conversation requires numeric id from list_conversations.' };
+      }
+    }
+    if (name === 'click_element') {
+      if (!args || (typeof args.df !== 'number' && typeof args.df !== 'string')) {
+        return { ok: false, detail: 'click_element requires numeric df from observe.' };
+      }
+    }
     return { ok: true };
   }
 
   async function executeTool(name, args) {
+    debugLog('executeTool ' + name + ' args=' + JSON.stringify(args || {}));
     try {
       switch (name) {
         case 'list_conversations':
@@ -618,6 +790,7 @@
       { role: 'user', content: task },
     ];
 
+    let noToolStreak = 0;
     for (let i = 0; i < MAX_ITERATIONS && state.running && !state.finished; i++) {
       let resp;
       try {
@@ -635,12 +808,18 @@
       messages.push(assistant);
 
       if (assistant.tool_calls && assistant.tool_calls.length) {
+        noToolStreak = 0;
         for (const tc of assistant.tool_calls) {
-          let args = {};
-          try {
-            args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
-          } catch (e) {
-            args = {};
+          const parsed = parseToolArgs(tc.function.arguments);
+          if (!parsed.ok) {
+            messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ status: 'bad_arguments', detail: parsed.error }) });
+            continue;
+          }
+          const args = parsed.args;
+          const validation = validateToolArgs(tc.function.name, args);
+          if (!validation.ok) {
+            messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ status: 'bad_arguments', detail: validation.detail }) });
+            continue;
           }
           if (tc.function.name === 'finish') log('AI: ' + (args.summary || 'done'));
           const result = await executeTool(tc.function.name, args);
@@ -649,7 +828,16 @@
         }
       } else {
         if (assistant.content) log('AI: ' + assistant.content);
-        break; // no tool calls → model is done
+        noToolStreak += 1;
+        if (noToolStreak >= 3) {
+          log('AI stopped: model returned no tool calls repeatedly.');
+          break;
+        }
+        messages.push({
+          role: 'user',
+          content:
+            'Continue using tools only. Do not stop yet. Start with list_conversations, then delete_conversation / scroll_conversation_list as needed, and call finish only when truly done.',
+        });
       }
     }
 
