@@ -42,6 +42,7 @@
   const state = { running: false, deletedCount: 0, aiEnabled: false, finished: false, debug: false };
   const skippedRows = new WeakSet(); // rows with no "Delete chat" option (Marketplace, etc.)
   const seenConversationNames = new Set(); // cumulative names observed during this page session
+  const deletedConversationNames = []; // ordered names deleted during this page session
 
   // Agent state: stable row identity + last-observed root for click_element.
   const agentRows = new Map(); // id (string) -> row element
@@ -297,7 +298,8 @@
   function downloadCsv() {
     // Keep CSV cumulative in virtualized lists by recording what is currently mounted.
     rememberVisibleConversations();
-    const rows = Array.from(seenConversationNames).map((name) => ({ name }));
+    const names = deletedConversationNames.length ? deletedConversationNames : Array.from(seenConversationNames);
+    const rows = names.map((name) => ({ name }));
     if (!rows.length) {
       log('No conversations loaded to export.');
       return;
@@ -740,6 +742,7 @@
       log(`Processing: ${name}`);
       try {
         await performDelete(row);
+        deletedConversationNames.push(name);
         state.deletedCount += 1;
         updateCount();
         log(`Deleted #${state.deletedCount}.`);
@@ -877,6 +880,7 @@
     rememberConversationName(name);
     try {
       await performDelete(row);
+      deletedConversationNames.push(name);
       agentRows.delete(id);
       state.deletedCount += 1;
       updateCount();
