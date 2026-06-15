@@ -36,9 +36,12 @@
   };
 
   const MAX_ITERATIONS = 100; // agent loop / cost backstop
+  const ACTIONABLE_SELECTOR =
+    '[role="button"], [role="menuitem"], [role="option"], button, a[href], [aria-haspopup="menu"]';
 
   const state = { running: false, deletedCount: 0, aiEnabled: false, finished: false, debug: false };
   const skippedRows = new WeakSet(); // rows with no "Delete chat" option (Marketplace, etc.)
+  const seenConversationNames = new Set(); // cumulative names observed during this page session
 
   // Agent state: stable row identity + last-observed root for click_element.
   const agentRows = new Map(); // id (string) -> row element
@@ -292,7 +295,9 @@
   // Download the names of currently-loaded conversations as CSV. Local-only:
   // no AI, no network, independent of the AI setting and run state.
   function downloadCsv() {
-    const rows = findAllRows().map((r) => ({ name: rowName(r) }));
+    // Keep CSV cumulative in virtualized lists by recording what is currently mounted.
+    rememberVisibleConversations();
+    const rows = Array.from(seenConversationNames).map((name) => ({ name }));
     if (!rows.length) {
       log('No conversations loaded to export.');
       return;
@@ -340,6 +345,20 @@
     const link = row.querySelector('a[role="link"], a[href]');
     const t = link && (link.textContent || '').trim();
     return t || 'conversation';
+  }
+
+  function rememberConversationName(name) {
+    const clean = String(name || '').trim();
+    if (clean) seenConversationNames.add(clean);
+  }
+
+  function rememberConversationRow(row) {
+    if (!row) return;
+    rememberConversationName(rowName(row));
+  }
+
+  function rememberVisibleConversations() {
+    for (const row of findAllRows()) rememberConversationRow(row);
   }
 
   function findChatList() {
@@ -453,18 +472,22 @@
     const labels = nodes.map((n) => ((n.textContent || '').trim() || (n.getAttribute && n.getAttribute('aria-label')) || '').trim());
     const best = pickBestMatch(labels, candidates, { maxLen: 64 });
     if (best >= 0) {
-      const picked = nearestActionable(nodes[best], scope);
-      debugLog(`findElement(${candidates.join(' | ')}) via ranked match -> ${describeElement(picked)}`);
-      return picked;
+      const picked = asActionable(nodes[best], scope);
+      if (picked) {
+        debugLog(`findElement(${candidates.join(' | ')}) via ranked match -> ${describeElement(picked)}`);
+        return picked;
+      }
     }
 
     const hit = matchByText(nodes, candidates);
     if (hit) {
-      const picked = nearestActionable(hit, scope);
-      debugLog(`findElement(${candidates.join(' | ')}) via text/aria contains -> ${describeElement(picked)}`);
-      return picked;
+      const picked = asActionable(hit, scope);
+      if (picked) {
+        debugLog(`findElement(${candidates.join(' | ')}) via text/aria contains -> ${describeElement(picked)}`);
+        return picked;
+      }
     }
-    const picked = nearestActionable(findByText(scope, candidates), scope);
+    const picked = asActionable(findByText(scope, candidates), scope);
     debugLog(`findElement(${candidates.join(' | ')}) via exact fallback -> ${describeElement(picked)}`);
     return picked;
   }
@@ -482,6 +505,11 @@
     if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
     const r = el.getBoundingClientRect();
     return r.width > 2 && r.height > 2;
+  }
+
+  function asActionable(node, scope) {
+    const picked = nearestActionable(node, scope);
+    return picked && picked.matches && picked.matches(ACTIONABLE_SELECTOR) ? picked : null;
   }
 
   // Fallback used mostly for confirm dialogs where actionable nodes sometimes
@@ -502,9 +530,11 @@
 
     const best = pickBestMatch(labels, wants, { maxLen: 64 });
     if (best >= 0) {
-      const picked = nearestActionable(shortNodes[best], scope);
-      debugLog(`findElementByNormalizedText(${wants.join(' | ')}) -> ${describeElement(picked)}`);
-      return picked;
+      const picked = asActionable(shortNodes[best], scope);
+      if (picked) {
+        debugLog(`findElementByNormalizedText(${wants.join(' | ')}) -> ${describeElement(picked)}`);
+        return picked;
+      }
     }
     return null;
   }
@@ -694,6 +724,7 @@
   // ---------------------------- Heuristic loop (AI off) ----------------------------
 
   async function runLoop() {
+    rememberVisibleConversations();
     const initialCount = findAllRows().length;
     log(`Found ${initialCount} conversation(s). Starting…`);
 
@@ -705,6 +736,7 @@
         return;
       }
       const name = rowName(row);
+      rememberConversationName(name);
       log(`Processing: ${name}`);
       try {
         await performDelete(row);
@@ -827,7 +859,9 @@
         row.setAttribute('data-df-id', id);
       }
       agentRows.set(id, row);
-      out.push({ id: Number(id), name: rowName(row) });
+      const name = rowName(row);
+      rememberConversationName(name);
+      out.push({ id: Number(id), name });
     }
     return { conversations: out };
   }
@@ -840,6 +874,7 @@
       return { status: 'error', detail: 'No live conversation with that id (it may already be deleted). Call list_conversations again.' };
     }
     const name = rowName(row);
+    rememberConversationName(name);
     try {
       await performDelete(row);
       agentRows.delete(id);
@@ -868,6 +903,7 @@
       /* ignore */
     }
     await sleep(jitter(700, 1200));
+    rememberVisibleConversations();
     const after = findAllRows().length;
     return { loadedCount: after, gained: after - before };
   }
