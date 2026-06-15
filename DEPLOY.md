@@ -9,21 +9,23 @@
 5. The DeleteF icon appears in the toolbar. (Temporary add-ons are removed when Firefox
    restarts — repeat these steps to reload.)
 
-## (Optional) Enable the DeepSeek AI fallback
+## (Optional) Enable the DeepSeek AI mode
 
-The extension works fully without this. Enable it only if you want automatic recovery when
-Facebook changes its UI.
+The extension works fully without this. Enable it only if you want the agent to delete
+*selectively* (e.g. "delete everyone except Mom") based on the instruction box.
 
-1. Go to `about:addons` → **Extensions** → **DeleteF** → **Preferences** (the **⋯** menu →
-   Manage → Preferences). Or from `about:debugging`, the options page is listed too.
-2. Set **Enable AI fallback** to **On**.
-3. Paste your **DeepSeek API key** (`sk-...`).
+Everything is in the **panel** — there is no separate settings page:
+
+1. Click the **DeleteF** toolbar icon to open the panel.
+2. Tick **Use AI (DeepSeek)**.
+3. Paste your **DeepSeek API key** (`sk-...`) in the field that appears (👁 toggles visibility).
 4. Choose a **model** — `deepseek-chat` (fast, cheap) is recommended.
-5. Click **Save**.
 
-> ⚠️ With AI enabled, a **redacted** page structure (tags/roles/aria-labels only — no
-> contact names or message text) is sent to DeepSeek **only when a selector fails**. Leave
-> it Off for zero network calls.
+Settings save automatically as you change them (stored in `browser.storage.local`).
+
+> ⚠️ With AI on, the agent reads the conversation list, so **real contact names and visible
+> text are sent to DeepSeek** to decide who to delete. Leave it off for zero network calls
+> and nothing leaving your browser.
 
 ## Use
 
@@ -43,12 +45,14 @@ Facebook changes its UI.
   markup or your UI isn't in English. Two fixes:
   - Open `content.js` and update the `LABELS` strings to match the wording you see, then
     reload the add-on in `about:debugging`; **or**
-  - Enable the **AI fallback** (above) so DeepSeek locates the buttons automatically.
-- **"AI unavailable" / "No DeepSeek API key set":** Open Preferences, enable AI, and save a
-  valid key. Check the key has quota/credit.
+  - Or, if the wording just shifted, the human-paced clicker retries the confirm step once
+    automatically; persistent failures usually mean the `LABELS` need updating.
+- **"AI on — but no API key set" / "No DeepSeek API key set":** Tick **Use AI** in the panel
+  and paste a valid key in the field that appears. Check the key has quota/credit.
 - **"DeepSeek HTTP 401/402/429":** 401 = bad key, 402 = no balance, 429 = rate-limited.
   Fix the key/credit or wait and retry.
 - **Stops after a few deletes / nothing happens:** Facebook may be rate-limiting. Wait a few
-  minutes and Start again. Increase the delays in `content.js` (`jitter(800, 1500)`).
+  minutes and Start again. Increase the inter-deletion delay in `content.js`
+  (`jitter(1500, 3500)` in `runLoop`).
 - **Verify it loaded:** In `about:debugging` → This Firefox, find DeleteF and click
   **Inspect** to view the background/content console for errors.

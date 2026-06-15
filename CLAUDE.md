@@ -30,18 +30,19 @@ All deletion logic, the panel UI, CSV export, and the agent loop. Depends on `li
 
 Key entry points:
 - `LABELS` object at the top — all Facebook UI strings to match against. First thing to update when Facebook changes its UI.
-- `performDelete(row)` — **the single shared clicking path** used by BOTH modes: hover row → open "⋯" menu → `waitForMenu()` → click "Delete chat" → confirm in dialog → wait for row to detach. Throws a typed `DeleteError` (`code`: `no_delete_option`, `no_menu`, `no_dialog`, etc.) so callers can distinguish "skip this row" from a real failure.
-- `findElement(scope, candidates)` — **local heuristics only** (synchronous): `matchByText()` then `findByText()`. No AI, no network. The agent reasons at a higher level; it does not drive low-level element finding.
+- `performDelete(row)` — **the single shared clicking path** used by BOTH modes: hover row → open "⋯" menu → `waitForMenu()` → settle → click "Delete chat" → wait for dialog → **settle (~400–800ms) before confirming** (the dialog button is not interactive on its mount frame) → confirm → wait for row to detach, **clicking confirm once more if it doesn't**. Throws a typed `DeleteError` (`code`: `no_delete_option`, `no_menu`, `no_dialog`, etc.) so callers can distinguish "skip this row" from a real failure.
+- `clickElement(el)` — **async, human-paced clicking**: hover → small jittered delay → `pointerdown`/`mousedown` → delay → `pointerup`/`mouseup` → `click`. React often wires controls to pointer events, so a bare synchronous `.click()` no-ops; callers must `await`. Pair with `nearestActionable()` so the click targets the control, not a text node inside it.
+- `findElement(scope, candidates)` — **local heuristics only** (synchronous): ranks candidate controls with `pickBestMatch()` (exact label > bounded prefix/contains, so it won't grab a dialog's body text), falls back to `matchByText()`/`findByText()`, and promotes the result via `nearestActionable()`. No AI, no network. The agent reasons at a higher level; it does not drive low-level element finding.
 - `findByText()` — walks descendants in reverse DOM order, returns the deepest whose trimmed textContent exactly matches a candidate. Needed because Facebook menu items often lack a `role`.
 - `waitForMenu()` — after clicking "⋯", polls for BOTH the `aria-controls` target (`getElementById`) AND a `role="menu"`/`role="listbox"` popup, returning whichever appears first. Facebook's `aria-controls` value frequently does not match the mounted menu's `id`, so relying on `getElementById` alone times out even when the menu is visible.
 - `runAgent()` / `AGENT_TOOLS` / `executeTool()` — the agent loop. Tool **schemas and executors both live in `content.js`**; each model turn is sent to background via `browser.runtime.sendMessage({type:'AGENT_TURN', payload:{messages, tools}})`, tool calls are executed against the DOM, results are appended as `role:"tool"` messages, repeat. Bounded by `MAX_ITERATIONS` and the Stop button (`state.running`).
 - CSV export: `downloadCsv()` builds names of currently-loaded rows via `findAllRows()` + `rowName()` + `toCsv()`, then triggers a Blob download. Fully local; no AI, no network, no `downloads` permission.
 
 **`lib/dom-helpers.js`**
-Pure, side-effect-free helpers. Dual-exports: attaches to `globalThis.DeleteF` in the browser, exports via `module.exports` for Node tests. Functions: `jitter`, `matchByText`, `waitFor`, `resolveSelector`, `redactStructure` (supports `{includeText}`), `parseSelectorResponse`, `nameFromAriaLabel`, `toCsv`.
+Pure, side-effect-free helpers. Dual-exports: attaches to `globalThis.DeleteF` in the browser, exports via `module.exports` for Node tests. Functions: `jitter`, `matchByText`, `pickBestMatch` (ranked exact/prefix/contains label match, bounded by `maxLen`), `waitFor`, `resolveSelector`, `redactStructure` (supports `{includeText}`), `parseSelectorResponse`, `nameFromAriaLabel`, `toCsv`, `nearestActionable` (walk a node up to its nearest clickable ancestor).
 
-**`options.html` / `options.js`**
-Settings page (AI on/off, DeepSeek API key, model). Reads/writes `browser.storage.local`.
+**AI settings (in the panel)**
+The panel hosts the AI controls directly: a "Use AI" checkbox, DeepSeek API-key field (show/hide), and model select. They auto-save to `browser.storage.local` (`aiEnabled`, `deepseekApiKey`, `deepseekModel`) on change — the same keys `background.js` reads. `refreshAiStatus()` loads them into the controls + `state` on panel build and at the start of each run; `saveAiConfig()` persists them. There is no separate options page.
 
 ## Key design constraints
 

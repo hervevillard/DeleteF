@@ -74,12 +74,11 @@ See [DEPLOY.md](DEPLOY.md) for install and usage.
 
 | File | Responsibility |
 |------|----------------|
-| `manifest.json` | MV3 manifest: action button, content scripts, options page, permissions |
-| `background.js` | Toggles panel; calls DeepSeek for the AI fallback |
-| `content.js` | `LABELS` config, panel injection, deletion loop, AI fallback wiring |
+| `manifest.json` | MV3 manifest: action button, content scripts, permissions |
+| `background.js` | Toggles panel; calls DeepSeek for the AI agent |
+| `content.js` | `LABELS` config, panel (incl. in-panel AI toggle/key/model), deletion loop, agent wiring |
 | `lib/dom-helpers.js` | Pure, tested helpers |
 | `panel.css` | Control-panel styling |
-| `options.html` / `options.js` | AI-fallback settings (key, model, on/off) |
 | `icons/` | Toolbar icons |
 | `test/dom-helpers.test.js` | Unit tests |
 | `docs/superpowers/` | Design spec and implementation plan |
