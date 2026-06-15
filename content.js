@@ -541,6 +541,40 @@
     return null;
   }
 
+  // Dialog-specific confirm finder: only scan actionable controls so headings
+  // like <h2>"Delete chat" can never be selected as a click target.
+  function findDialogConfirmButton(dialog, candidates) {
+    if (!dialog) return null;
+    const controls = Array.from(dialog.querySelectorAll(ACTIONABLE_SELECTOR));
+    if (!controls.length) return null;
+
+    const labels = controls.map((el) => {
+      const text = (el.textContent || '').trim();
+      const aria = (el.getAttribute && el.getAttribute('aria-label')) || '';
+      return (text || aria).trim();
+    });
+
+    const best = pickBestMatch(labels, candidates, { maxLen: 64 });
+    if (best >= 0) {
+      const picked = asActionable(controls[best], dialog);
+      if (picked) {
+        debugLog(`findDialogConfirmButton(${candidates.join(' | ')}) via ranked match -> ${describeElement(picked)}`);
+        return picked;
+      }
+    }
+
+    const hit = matchByText(controls, candidates);
+    if (hit) {
+      const picked = asActionable(hit, dialog);
+      if (picked) {
+        debugLog(`findDialogConfirmButton(${candidates.join(' | ')}) via text/aria contains -> ${describeElement(picked)}`);
+        return picked;
+      }
+    }
+
+    return findElementByNormalizedText(dialog, candidates);
+  }
+
   function waitForDialog() {
     return waitFor(
       () => {
@@ -696,11 +730,8 @@
     const dialog = await waitForDialog();
     if (!dialog) throw new DeleteError('no_dialog', 'The confirm dialog did not appear.');
     await sleep(jitter(400, 800));
-    let confirmBtn = findElement(dialog, LABELS.confirmDelete);
-    if (!confirmBtn) {
-      debugLog('confirm lookup fallback: dialog text="' + normalizeText(dialog.textContent).slice(0, 120) + '"');
-      confirmBtn = findElementByNormalizedText(dialog, LABELS.confirmDelete);
-    }
+    let confirmBtn = findDialogConfirmButton(dialog, LABELS.confirmDelete);
+    if (!confirmBtn) debugLog('confirm lookup fallback: dialog text="' + normalizeText(dialog.textContent).slice(0, 120) + '"');
     if (!confirmBtn) throw new DeleteError('no_confirm', 'Could not find the confirm "Delete" button.');
     debugLog('performDelete confirmBtn -> ' + describeElement(confirmBtn));
     await clickElement(nearestActionable(confirmBtn, dialog));
@@ -711,8 +742,7 @@
       await waitFor(() => !row.isConnected, { timeout: 5000, interval: 150 });
     } catch (e) {
       const retryDialog = await waitForDialog();
-      let retryBtn = retryDialog && findElement(retryDialog, LABELS.confirmDelete);
-      if (!retryBtn && retryDialog) retryBtn = findElementByNormalizedText(retryDialog, LABELS.confirmDelete);
+      const retryBtn = retryDialog && findDialogConfirmButton(retryDialog, LABELS.confirmDelete);
       if (retryBtn) {
         debugLog('performDelete retry confirm -> ' + describeElement(retryBtn));
         await sleep(jitter(300, 600));
