@@ -14,9 +14,9 @@
   // ---- Centralized config: update these when Facebook changes wording/markup. ----
   // Defaults assume an ENGLISH Facebook UI.
   const LABELS = {
-    moreMenu: ['more', 'menu', 'options'], // the "⋯" button on a conversation row
-    deleteChat: ['delete chat', 'delete'], // menu item that opens the confirm dialog
-    confirmDelete: ['delete'],             // confirm button inside the dialog
+    moreMenu: ['more options', 'more', 'options'], // aria-label="More options for [Name]"
+    deleteChat: ['delete chat'],                    // menu item and confirm dialog button
+    confirmDelete: ['delete chat', 'delete'],       // confirm button inside the dialog
   };
 
   const state = { running: false, deletedCount: 0, aiEnabled: false };
@@ -127,17 +127,28 @@
       (r) => r.querySelector('[role="navigation"] [role="grid"]'),
       (r) => r.querySelector('[role="grid"]'),
       '[role="grid"]',
+      // Fallback: derive the list container from the first visible conversation row.
+      (r) => {
+        const cell = r.querySelector('[role="gridcell"]');
+        return cell ? cell.parentElement : null;
+      },
     ]);
   }
 
   function findFirstRow() {
     const list = findChatList();
-    if (!list) return null;
-    return resolveSelector(list, [
-      (r) => r.querySelector('[role="row"]'),
-      (r) => r.querySelector('[role="gridcell"]'),
-      (r) => r.querySelector('a[role="link"]'),
-    ]);
+    if (list) {
+      const found = resolveSelector(list, [
+        (r) => r.querySelector('[role="row"]'),
+        (r) => r.querySelector('[role="gridcell"]'),
+        (r) => r.querySelector('a[role="link"]'),
+      ]);
+      if (found) return found;
+    }
+    // Direct fallback: find any conversation row by its "More options" button.
+    const btn = document.querySelector('[aria-haspopup="menu"][aria-label]');
+    if (!btn) return null;
+    return btn.closest('[role="gridcell"]') || btn.closest('[role="row"]') || btn.parentElement;
   }
 
   // Tag live elements with data-df indices using the SAME depth-first traversal
@@ -224,10 +235,41 @@
     }
   }
 
+  // Find the deepest element in `root` whose trimmed, case-insensitive textContent
+  // exactly equals one of `candidates`. Returns null if none found.
+  // Used when Facebook omits role attributes on menu items.
+  function findByText(root, candidates) {
+    const wants = candidates.map((c) => c.toLowerCase());
+    const all = root.querySelectorAll('*');
+    for (let i = all.length - 1; i >= 0; i--) {
+      const el = all[i];
+      const text = (el.textContent || '').trim().toLowerCase();
+      if (text && wants.some((w) => text === w)) return el;
+    }
+    return null;
+  }
+
+  // After clicking the "⋯" button, wait for its controlled menu to appear.
+  // Uses aria-controls first (exact match), then falls back to role="menu".
+  function waitForMenu(moreBtn) {
+    const menuId = moreBtn && moreBtn.getAttribute('aria-controls');
+    if (menuId) {
+      return waitFor(() => document.getElementById(menuId), { timeout: 4000, interval: 100 })
+        .catch(() => null);
+    }
+    return waitFor(
+      () => document.querySelector('[role="menu"]') || document.querySelector('[role="listbox"]'),
+      { timeout: 4000, interval: 100 }
+    ).catch(() => null);
+  }
+
   // Find an element by heuristic text match, falling back to the AI if enabled.
   async function findElement({ scope, candidates, aiTarget }) {
     const hit = matchByText(scope.querySelectorAll('[role="button"], [role="menuitem"], button, [aria-label]'), candidates);
     if (hit) return hit;
+    // Facebook sometimes omits role attributes on menu items — fall back to exact text match.
+    const byText = findByText(scope, candidates);
+    if (byText) return byText;
     return findWithAi(scope, aiTarget);
   }
 
@@ -256,19 +298,15 @@
     moreBtn.click();
 
     // 2. Click "Delete chat" in the popup menu.
-    const deleteItem = await waitFor(
-      () => {
-        const items = document.querySelectorAll('[role="menuitem"]');
-        return items.length ? matchByText(items, LABELS.deleteChat) : null;
-      },
-      { timeout: 6000, interval: 150 }
-    ).catch(() => null);
-    const deleteHit =
-      deleteItem ||
-      (await findWithAi(
-        document.querySelector('[role="menu"]') || document.body,
-        'the "Delete chat" item in the open menu'
-      ));
+    // Use aria-controls to find the specific menu this button opened — avoids passing
+    // the entire document body to the AI fallback when role="menu" is absent.
+    const menuRoot = await waitForMenu(moreBtn);
+    if (!menuRoot) throw new Error('The "More options" menu did not appear.');
+    const deleteHit = await findElement({
+      scope: menuRoot,
+      candidates: LABELS.deleteChat,
+      aiTarget: 'the "Delete chat" menu item',
+    });
     if (!deleteHit) throw new Error('Could not find the "Delete chat" menu item.');
     deleteHit.click();
 
