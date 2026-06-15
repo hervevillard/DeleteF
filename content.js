@@ -762,28 +762,53 @@
     debugLog('performDelete deleteHit -> ' + describeElement(deleteHit));
     await clickElement(nearestActionable(deleteHit, menuRoot));
 
-    // 3. Confirm in the dialog. Pause first: the dialog animates in and its button
-    //    is not interactive on the same frame it mounts — clicking too early no-ops.
+    // 3. Confirm in the dialog. Poll for a non-disabled button: Facebook briefly
+    //    sets aria-disabled="true" on the confirm button while the dialog is
+    //    animating in, and React ignores clicks on aria-disabled controls.
     const dialog = await waitForDialog();
     if (!dialog) throw new DeleteError('no_dialog', 'The confirm dialog did not appear.');
-    await sleep(jitter(400, 800));
-    let confirmBtn = findDialogConfirmButton(dialog, LABELS.confirmDelete);
-    if (!confirmBtn) debugLog('confirm lookup fallback: dialog text="' + normalizeText(dialog.textContent).slice(0, 120) + '"');
-    if (!confirmBtn) throw new DeleteError('no_confirm', 'Could not find the confirm "Delete" button.');
+    const confirmBtn = await waitFor(
+      () => {
+        const btn = findDialogConfirmButton(dialog, LABELS.confirmDelete);
+        if (!btn) return null;
+        const disabled = btn.getAttribute('aria-disabled') === 'true' || btn.hasAttribute('disabled');
+        debugLog('confirmBtn: ' + describeElement(btn) + ' disabled=' + disabled);
+        return disabled ? null : btn;
+      },
+      { timeout: 8000, interval: 300 }
+    ).catch(() => null);
+    if (!confirmBtn) {
+      debugLog('confirm lookup failed: dialog text="' + normalizeText(dialog.textContent).slice(0, 120) + '"');
+      throw new DeleteError('no_confirm', 'Could not find an enabled confirm "Delete" button.');
+    }
     debugLog('performDelete confirmBtn -> ' + describeElement(confirmBtn));
+    try { confirmBtn.focus(); } catch (e) { /* ignore */ }
+    await sleep(jitter(100, 200));
     await clickElement(nearestActionable(confirmBtn, dialog));
 
-    // 4. Wait for the row to detach. If it doesn't, the first confirm click likely
-    //    landed before the button was wired — re-find the dialog and click once more.
+    // 4. Wait for the row to detach. If it doesn't, re-find the dialog (in case a
+    //    second confirmation step appeared) and click once more.
     try {
       await waitFor(() => !row.isConnected, { timeout: 5000, interval: 150 });
     } catch (e) {
       const retryDialog = await waitForDialog();
-      const retryBtn = retryDialog && findDialogConfirmButton(retryDialog, LABELS.confirmDelete);
-      if (retryBtn) {
-        debugLog('performDelete retry confirm -> ' + describeElement(retryBtn));
-        await sleep(jitter(300, 600));
-        await clickElement(nearestActionable(retryBtn, retryDialog));
+      if (retryDialog) {
+        const retryBtn = await waitFor(
+          () => {
+            const btn = findDialogConfirmButton(retryDialog, LABELS.confirmDelete);
+            if (!btn) return null;
+            const disabled = btn.getAttribute('aria-disabled') === 'true' || btn.hasAttribute('disabled');
+            return disabled ? null : btn;
+          },
+          { timeout: 4000, interval: 300 }
+        ).catch(() => null);
+        if (retryBtn) {
+          debugLog('performDelete retry confirm -> ' + describeElement(retryBtn));
+          await sleep(jitter(800, 1500));
+          try { retryBtn.focus(); } catch (e) { /* ignore */ }
+          await sleep(jitter(100, 200));
+          await clickElement(nearestActionable(retryBtn, retryDialog));
+        }
       }
       await waitFor(() => !row.isConnected, { timeout: 6000, interval: 150 });
     }
