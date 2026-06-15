@@ -562,14 +562,25 @@
     return null;
   }
 
+  function isDisabledControl(el) {
+    if (!el) return true;
+    if (el.hasAttribute && el.hasAttribute('disabled')) return true;
+    const ariaDisabled = normalizeText((el.getAttribute && el.getAttribute('aria-disabled')) || '');
+    if (ariaDisabled === 'true') return true;
+    if ((el.getAttribute && el.getAttribute('tabindex')) === '-1') return true;
+    return false;
+  }
+
   // Dialog-specific confirm finder: only scan actionable controls so headings
   // like <h2>"Delete chat" can never be selected as a click target.
   function findDialogConfirmButton(dialog, candidates) {
     if (!dialog) return null;
     const controls = Array.from(dialog.querySelectorAll(DIALOG_CONFIRM_SELECTOR));
     if (!controls.length) return null;
+    const candidatesPool = controls.filter((el) => !isDisabledControl(el));
+    const pool = candidatesPool.length ? candidatesPool : controls;
 
-    const labels = controls.map((el) => {
+    const labels = pool.map((el) => {
       const text = (el.textContent || '').trim();
       const aria = (el.getAttribute && el.getAttribute('aria-label')) || '';
       return (text || aria).trim();
@@ -577,14 +588,14 @@
 
     const best = pickBestMatch(labels, candidates, { maxLen: 64 });
     if (best >= 0) {
-      const picked = asActionable(controls[best], dialog, DIALOG_CONFIRM_SELECTOR);
+      const picked = asActionable(pool[best], dialog, DIALOG_CONFIRM_SELECTOR);
       if (picked) {
         debugLog(`findDialogConfirmButton(${candidates.join(' | ')}) via ranked match -> ${describeElement(picked)}`);
         return picked;
       }
     }
 
-    const hit = matchByText(controls, candidates);
+    const hit = matchByText(pool, candidates);
     if (hit) {
       const picked = asActionable(hit, dialog, DIALOG_CONFIRM_SELECTOR);
       if (picked) {
@@ -596,15 +607,16 @@
     return findElementByNormalizedText(dialog, candidates, DIALOG_CONFIRM_SELECTOR);
   }
 
+  function currentDeleteDialog() {
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]')).filter(isVisible);
+    if (!dialogs.length) return null;
+    const deleteDialog = dialogs.find((d) => isDeleteRecoveryRoot(d) || hasDeleteConfirmControl(d));
+    return deleteDialog || dialogs[dialogs.length - 1];
+  }
+
   function waitForDialog() {
     return waitFor(
-      () => {
-        const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]')).filter(isVisible);
-        if (!dialogs.length) return null;
-        const deleteDialog = dialogs.find((d) => isDeleteRecoveryRoot(d) || hasDeleteConfirmControl(d));
-        if (deleteDialog) return deleteDialog;
-        return dialogs[dialogs.length - 1];
-      },
+      () => currentDeleteDialog(),
       { timeout: 6000, interval: 150 }
     ).catch(() => null);
   }
@@ -767,24 +779,27 @@
     //    animating in, and React ignores clicks on aria-disabled controls.
     const dialog = await waitForDialog();
     if (!dialog) throw new DeleteError('no_dialog', 'The confirm dialog did not appear.');
-    const confirmBtn = await waitFor(
+    const confirm = await waitFor(
       () => {
-        const btn = findDialogConfirmButton(dialog, LABELS.confirmDelete);
+        const activeDialog = currentDeleteDialog() || dialog;
+        const btn = findDialogConfirmButton(activeDialog, LABELS.confirmDelete);
         if (!btn) return null;
-        const disabled = btn.getAttribute('aria-disabled') === 'true' || btn.hasAttribute('disabled');
+        const disabled = isDisabledControl(btn);
         debugLog('confirmBtn: ' + describeElement(btn) + ' disabled=' + disabled);
-        return disabled ? null : btn;
+        return disabled ? null : { btn, dialog: activeDialog };
       },
       { timeout: 8000, interval: 300 }
     ).catch(() => null);
-    if (!confirmBtn) {
+    if (!confirm) {
       debugLog('confirm lookup failed: dialog text="' + normalizeText(dialog.textContent).slice(0, 120) + '"');
       throw new DeleteError('no_confirm', 'Could not find an enabled confirm "Delete" button.');
     }
+    const confirmBtn = confirm.btn;
+    const confirmDialog = confirm.dialog || dialog;
     debugLog('performDelete confirmBtn -> ' + describeElement(confirmBtn));
     try { confirmBtn.focus(); } catch (e) { /* ignore */ }
     await sleep(jitter(100, 200));
-    await clickElement(nearestActionable(confirmBtn, dialog));
+    await clickElement(nearestActionable(confirmBtn, confirmDialog));
 
     // 4. Wait for the row to detach. If it doesn't, re-find the dialog (in case a
     //    second confirmation step appeared) and click once more.
@@ -793,21 +808,24 @@
     } catch (e) {
       const retryDialog = await waitForDialog();
       if (retryDialog) {
-        const retryBtn = await waitFor(
+        const retry = await waitFor(
           () => {
-            const btn = findDialogConfirmButton(retryDialog, LABELS.confirmDelete);
+            const activeDialog = currentDeleteDialog() || retryDialog;
+            const btn = findDialogConfirmButton(activeDialog, LABELS.confirmDelete);
             if (!btn) return null;
-            const disabled = btn.getAttribute('aria-disabled') === 'true' || btn.hasAttribute('disabled');
-            return disabled ? null : btn;
+            const disabled = isDisabledControl(btn);
+            return disabled ? null : { btn, dialog: activeDialog };
           },
           { timeout: 4000, interval: 300 }
         ).catch(() => null);
-        if (retryBtn) {
+        if (retry) {
+          const retryBtn = retry.btn;
+          const activeRetryDialog = retry.dialog || retryDialog;
           debugLog('performDelete retry confirm -> ' + describeElement(retryBtn));
           await sleep(jitter(800, 1500));
           try { retryBtn.focus(); } catch (e) { /* ignore */ }
           await sleep(jitter(100, 200));
-          await clickElement(nearestActionable(retryBtn, retryDialog));
+          await clickElement(nearestActionable(retryBtn, activeRetryDialog));
         }
       }
       await waitFor(() => !row.isConnected, { timeout: 6000, interval: 150 });
