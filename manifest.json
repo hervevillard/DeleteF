@@ -20,7 +20,6 @@
   "action": {
     "default_title": "DeleteF — toggle delete panel",
     "default_icon": {
-      "24": "icons/trash-solid.svg",
       "48": "icons/icon-48.png",
       "96": "icons/icon-96.png"
     }
