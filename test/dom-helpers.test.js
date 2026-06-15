@@ -8,6 +8,8 @@ const {
   resolveSelector,
   redactStructure,
   parseSelectorResponse,
+  nameFromAriaLabel,
+  toCsv,
 } = require('../lib/dom-helpers.js');
 
 test('jitter returns an integer within [min, max]', () => {
@@ -130,4 +132,63 @@ test('parseSelectorResponse returns null on garbage or missing selector', () => 
   assert.equal(parseSelectorResponse('no json here'), null);
   assert.equal(parseSelectorResponse('{"foo": "bar"}'), null);
   assert.equal(parseSelectorResponse(''), null);
+});
+
+test('redactStructure includeText emits an element\'s own direct text', () => {
+  const dom = new JSDOM(`<div role="menu">
+    <div role="menuitem">Delete chat</div>
+    <div role="menuitem">Archive</div>
+  </div>`);
+  const out = redactStructure(dom.window.document.querySelector('[role="menu"]'), { includeText: true });
+  assert.match(out, /Delete chat/);
+  assert.match(out, /Archive/);
+});
+
+test('redactStructure includeText does not duplicate descendant text on the parent', () => {
+  const dom = new JSDOM(`<div><span>Leaf</span></div>`);
+  const out = redactStructure(dom.window.document.querySelector('div'), { includeText: true });
+  // "Leaf" is the span's OWN text; the wrapping div has no direct text of its own,
+  // so it must appear exactly once.
+  assert.equal((out.match(/Leaf/g) || []).length, 1);
+});
+
+test('redactStructure includeText escapes HTML-special characters in text', () => {
+  const dom = new JSDOM(`<div>a & b < c > d "e"</div>`);
+  const out = redactStructure(dom.window.document.querySelector('div'), { includeText: true });
+  assert.match(out, /a &amp; b &lt; c &gt; d &quot;e&quot;/);
+});
+
+test('redactStructure stays text-free by default (privacy preserved)', () => {
+  const dom = new JSDOM(`<div role="menuitem">Jane Doe</div>`);
+  const out = redactStructure(dom.window.document.querySelector('[role="menuitem"]'));
+  assert.ok(!out.includes('Jane Doe'));
+});
+
+test('nameFromAriaLabel strips the "More options for" prefix (case-insensitive)', () => {
+  assert.equal(nameFromAriaLabel('More options for Jane Doe'), 'Jane Doe');
+  assert.equal(nameFromAriaLabel('more options for  Bob '), 'Bob');
+  assert.equal(nameFromAriaLabel('MORE OPTIONS FOR Work Group'), 'Work Group');
+});
+
+test('nameFromAriaLabel handles missing / non-string / no-prefix input', () => {
+  assert.equal(nameFromAriaLabel(''), '');
+  assert.equal(nameFromAriaLabel(null), '');
+  assert.equal(nameFromAriaLabel(undefined), '');
+  assert.equal(nameFromAriaLabel('Plain Label'), 'Plain Label');
+});
+
+test('toCsv emits a header and one row per name', () => {
+  assert.equal(toCsv([{ name: 'Alice' }, { name: 'Bob' }]), 'Name\r\nAlice\r\nBob');
+});
+
+test('toCsv quotes fields containing comma, quote, or newline', () => {
+  assert.equal(toCsv([{ name: 'Doe, Jane' }]), 'Name\r\n"Doe, Jane"');
+  assert.equal(toCsv([{ name: 'a "quoted" name' }]), 'Name\r\n"a ""quoted"" name"');
+  assert.equal(toCsv([{ name: 'line1\nline2' }]), 'Name\r\n"line1\nline2"');
+});
+
+test('toCsv handles empty / missing input', () => {
+  assert.equal(toCsv([]), 'Name');
+  assert.equal(toCsv(undefined), 'Name');
+  assert.equal(toCsv([{}]), 'Name\r\n');
 });

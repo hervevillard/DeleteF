@@ -1,8 +1,12 @@
 // DeleteF background service worker.
 //   1. On toolbar-button click → tell the content script to toggle the panel.
-//   2. Handle ASK_AI messages → call DeepSeek (OpenAI-compatible) and return a CSS
-//      selector. The fetch lives here (not the content script) because Facebook's
-//      page CSP blocks cross-origin requests from content scripts.
+//   2. Handle AGENT_TURN messages → run one turn of the DeepSeek tool-calling
+//      agent: forward the running message history + tool schemas to DeepSeek
+//      (OpenAI-compatible) and return the raw assistant message (which may
+//      contain tool_calls). The fetch lives here (not the content script)
+//      because Facebook's page CSP blocks cross-origin requests from content
+//      scripts. This is a DUMB PROXY — it owns no tool logic; content.js owns
+//      the tool schemas, executes them against the DOM, and drives the loop.
 'use strict';
 
 const DEEPSEEK_URL = 'https://api.deepseek.com/chat/completions';
@@ -17,25 +21,20 @@ browser.action.onClicked.addListener(async (tab) => {
   }
 });
 
-// Ask DeepSeek which element to click, given a redacted structure snapshot.
-// Returns { selector } on success or { error } on failure. Never throws.
-async function askDeepSeek({ target, structure }) {
+// Run one agent turn. `messages` is the full OpenAI-format history (system,
+// user, assistant-with-tool_calls, tool results); `tools` is the function
+// schema list. Returns { message } (the assistant reply) or { error }.
+// Never throws.
+async function askDeepSeekAgent({ messages, tools }) {
   const cfg = await browser.storage.local.get({
     aiEnabled: false,
     deepseekApiKey: '',
     deepseekModel: 'deepseek-chat',
   });
 
-  if (!cfg.aiEnabled) return { error: 'AI fallback is disabled in settings.' };
+  if (!cfg.aiEnabled) return { error: 'AI is disabled in settings.' };
   if (!cfg.deepseekApiKey) return { error: 'No DeepSeek API key set in settings.' };
-
-  const system =
-    'You locate UI elements in a redacted HTML structure. Each element has a ' +
-    'data-df="N" attribute. Reply ONLY with JSON: {"selector": "[data-df=\\"N\\"]"} ' +
-    'choosing the single best element for the requested target. No prose.';
-  const user =
-    `Target to click: ${target}\n\n` +
-    `Redacted structure (text removed; tags/roles/aria-labels only):\n${structure}`;
+  if (!Array.isArray(messages) || !messages.length) return { error: 'No messages to send.' };
 
   try {
     const res = await fetch(DEEPSEEK_URL, {
@@ -46,34 +45,34 @@ async function askDeepSeek({ target, structure }) {
       },
       body: JSON.stringify({
         model: cfg.deepseekModel,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
+        messages,
+        tools,
+        tool_choice: 'auto',
         temperature: 0,
-        response_format: { type: 'json_object' },
         stream: false,
       }),
     });
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      return { error: `DeepSeek HTTP ${res.status}: ${detail.slice(0, 200)}` };
+      return { error: `DeepSeek HTTP ${res.status}: ${detail.slice(0, 300)}` };
     }
     const data = await res.json();
-    const content = data && data.choices && data.choices[0] && data.choices[0].message
-      ? data.choices[0].message.content
-      : '';
-    return { content };
+    const message =
+      data && data.choices && data.choices[0] && data.choices[0].message
+        ? data.choices[0].message
+        : null;
+    if (!message) return { error: 'DeepSeek returned no message.' };
+    return { message };
   } catch (err) {
     return { error: 'DeepSeek request failed: ' + err.message };
   }
 }
 
 browser.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.type === 'ASK_AI') {
+  if (msg && msg.type === 'AGENT_TURN') {
     // Returning a Promise makes this an async message responder in Firefox.
-    return askDeepSeek(msg.payload || {});
+    return askDeepSeekAgent(msg.payload || {});
   }
   return false;
 });

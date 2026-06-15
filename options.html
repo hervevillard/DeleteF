@@ -45,18 +45,23 @@
     </style>
   </head>
   <body>
-    <h1>DeleteF — AI fallback settings</h1>
+    <h1>DeleteF — AI settings</h1>
     <p>
-      DeleteF works without AI. If you provide a DeepSeek API key, the extension will
-      <strong>only</strong> call DeepSeek when its built-in selectors fail to find a button,
-      to recover automatically. It sends a <strong>redacted</strong> snapshot of the page
-      structure (tags, roles, aria-labels) — <strong>not</strong> contact names or message text.
+      DeleteF works without AI: with AI <strong>off</strong> (the default) it uses local
+      heuristics only and makes <strong>zero network calls</strong>.
+    </p>
+    <p>
+      With AI <strong>on</strong>, DeleteF runs an <strong>agent</strong>: DeepSeek decides which
+      conversations to delete (optionally filtered by the instruction you type in the panel),
+      and the extension carries out each click. In this mode the agent can read the list, so
+      real <strong>contact names and visible text are sent to DeepSeek</strong>. Use AI off if
+      you don't want any data leaving your browser.
     </p>
 
-    <label for="enabled">Enable AI fallback</label>
+    <label for="enabled">AI mode</label>
     <select id="enabled">
-      <option value="false">Off (no network calls — default)</option>
-      <option value="true">On (use DeepSeek when selectors fail)</option>
+      <option value="false">Off — local heuristics, no network (default)</option>
+      <option value="true">On — agentic (DeepSeek decides &amp; drives deletion)</option>
     </select>
 
     <label for="apiKey">DeepSeek API key</label>
@@ -73,8 +78,8 @@
     </select>
 
     <div class="note">
-      ⚠️ Enabling AI sends a redacted page structure to DeepSeek (a third-party API). Leave it
-      Off if you want the extension to make zero network calls.
+      ⚠️ Enabling AI sends conversation names and visible text to DeepSeek (a third-party API)
+      so the agent can decide what to delete. Leave it Off for zero network calls and no data egress.
     </div>
 
     <button id="save" type="button">Save</button>

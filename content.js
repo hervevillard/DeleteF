@@ -1,29 +1,41 @@
 // DeleteF content script. Injected into facebook.com/messages.
 // Depends on globalThis.DeleteF from lib/dom-helpers.js (loaded first).
 //
-// Flow per conversation: open the "⋯" menu -> click "Delete chat" -> confirm "Delete".
-// Element-finding tries resilient heuristics first; if those fail AND the user has
-// enabled the DeepSeek AI fallback in settings, it asks the AI (via background.js)
-// which element to click, then caches a stable selector for the rest of the session.
+// Two ways to delete a conversation thread:
+//   • AI OFF (default, private, no network): runLoop() walks the list and uses
+//     local heuristics (matchByText/findByText) to drive a 3-step delete.
+//   • AI ON (agentic): runAgent() runs a DeepSeek tool-calling loop. The model
+//     decides which conversations to delete (optionally filtered by the user's
+//     free-text instruction), calls tools we execute against the DOM, observes
+//     the results, and self-corrects. The extension is the model's hands/eyes;
+//     the network call is proxied through background.js (Facebook CSP).
+//
+// Both paths share performDelete(row) — the single, real clicking path.
 (function () {
   'use strict';
 
-  const { jitter, matchByText, waitFor, resolveSelector, redactStructure, parseSelectorResponse } =
+  const { jitter, matchByText, waitFor, resolveSelector, redactStructure, nameFromAriaLabel, toCsv } =
     globalThis.DeleteF;
 
   // ---- Centralized config: update these when Facebook changes wording/markup. ----
   // Defaults assume an ENGLISH Facebook UI.
   const LABELS = {
     moreMenu: ['more options', 'more', 'options'], // aria-label="More options for [Name]"
-    deleteChat: ['delete chat'],                    // menu item and confirm dialog button
+    deleteChat: ['delete chat'],                    // menu item
     confirmDelete: ['delete chat', 'delete'],       // confirm button inside the dialog
   };
 
-  const state = { running: false, deletedCount: 0, aiEnabled: false };
-  const aiCache = {};     // target -> stable CSS selector discovered by the AI this session
+  const MAX_ITERATIONS = 100; // agent loop / cost backstop
+
+  const state = { running: false, deletedCount: 0, aiEnabled: false, finished: false };
   const skippedRows = new WeakSet(); // rows with no "Delete chat" option (Marketplace, etc.)
 
-  let logEl, countEl, aiEl, startBtn, stopBtn;
+  // Agent state: stable row identity + last-observed root for click_element.
+  const agentRows = new Map(); // id (string) -> row element
+  let agentRowSeq = 0;
+  let lastObserveRoot = null;
+
+  let logEl, countEl, aiEl, startBtn, stopBtn, csvBtn, instrEl;
 
   function log(msg) {
     if (!logEl) return;
@@ -50,7 +62,10 @@
       <div class="deletef-buttons">
         <button class="deletef-action deletef-start">Start</button>
         <button class="deletef-action deletef-stop" disabled>Stop</button>
+        <button class="deletef-action deletef-csv">Download CSV</button>
       </div>
+      <textarea class="deletef-instr" rows="2"
+        placeholder="Instructions (AI mode only). Empty = delete all. e.g. delete everyone except Mom"></textarea>
       <div class="deletef-count">Deleted: 0</div>
       <div class="deletef-ai"></div>
       <div class="deletef-log"></div>`;
@@ -61,13 +76,16 @@
     logEl = panel.querySelector('.deletef-log');
     startBtn = panel.querySelector('.deletef-start');
     stopBtn = panel.querySelector('.deletef-stop');
+    csvBtn = panel.querySelector('.deletef-csv');
+    instrEl = panel.querySelector('.deletef-instr');
 
     panel.querySelector('.deletef-close').addEventListener('click', () => panel.remove());
     startBtn.addEventListener('click', onStart);
     stopBtn.addEventListener('click', onStop);
+    csvBtn.addEventListener('click', downloadCsv);
 
     refreshAiStatus();
-    log('Ready. Click Start to delete all conversations.');
+    log('Ready. Click Start to delete conversations.');
     return panel;
   }
 
@@ -84,7 +102,7 @@
     } catch (err) {
       state.aiEnabled = false;
     }
-    if (aiEl) aiEl.textContent = state.aiEnabled ? 'AI fallback: ON (DeepSeek)' : 'AI fallback: off';
+    if (aiEl) aiEl.textContent = state.aiEnabled ? 'AI: agentic (DeepSeek)' : 'AI: off (local heuristics)';
   }
 
   // ---------------------------- Run control ----------------------------
@@ -101,29 +119,65 @@
     log('Stopping after current step…');
   }
 
-  function onStart() {
+  async function onStart() {
     if (state.running) return;
+    await refreshAiStatus();
+
+    const instruction = instrEl ? instrEl.value.trim() : '';
+    const what = state.aiEnabled && instruction ? `conversations matching: "${instruction}"` : 'ALL conversations';
     const ok = window.confirm(
-      'This permanently deletes ALL conversations from your view on Facebook. ' +
-        'This cannot be undone. Continue?'
+      `This permanently deletes ${what} from your view on Facebook. This cannot be undone. Continue?`
     );
     if (!ok) {
       log('Cancelled.');
       return;
     }
-    refreshAiStatus();
+
+    state.deletedCount = 0;
+    updateCount();
     setRunning(true);
-    log('Starting…');
-    runLoop().catch((err) => {
-      log('Error: ' + err.message);
-      setRunning(false);
-    });
+
+    if (state.aiEnabled) {
+      log('Starting agent…');
+      runAgent(instruction).catch((err) => {
+        log('Error: ' + err.message);
+        setRunning(false);
+      });
+    } else {
+      log('Starting…');
+      runLoop().catch((err) => {
+        log('Error: ' + err.message);
+        setRunning(false);
+      });
+    }
   }
 
-  // ---------------------------- Element finding ----------------------------
+  // ---------------------------- CSV export ----------------------------
+
+  // Download the names of currently-loaded conversations as CSV. Local-only:
+  // no AI, no network, independent of the AI setting and run state.
+  function downloadCsv() {
+    const rows = findAllRows().map((r) => ({ name: rowName(r) }));
+    if (!rows.length) {
+      log('No conversations loaded to export.');
+      return;
+    }
+    const csv = toCsv(rows);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'deletef-conversations.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    log(`Exported ${rows.length} name(s) to CSV.`);
+  }
+
+  // ---------------------------- Row helpers ----------------------------
 
   // Identify a conversation row by its "More options" (⋯) button.
-  // The button's aria-controls attribute is the most reliable structural marker.
   function rowFromMoreButton(btn) {
     return btn.closest('[role="gridcell"]') || btn.closest('[role="row"]') || btn.parentElement;
   }
@@ -134,23 +188,35 @@
     const seen = new Set();
     for (const btn of document.querySelectorAll('[aria-haspopup="menu"][aria-controls]')) {
       const row = rowFromMoreButton(btn);
-      if (row && !seen.has(row)) { seen.add(row); rows.push(row); }
+      if (row && !seen.has(row)) {
+        seen.add(row);
+        rows.push(row);
+      }
     }
     return rows;
+  }
+
+  // Best-effort display name for a row: the ⋯ button's aria-label
+  // ("More options for [Name]") with the prefix stripped, else the row's link text.
+  function rowName(row) {
+    const btn = row.querySelector('[aria-haspopup="menu"][aria-controls]');
+    const fromLabel = btn ? nameFromAriaLabel(btn.getAttribute('aria-label') || '') : '';
+    if (fromLabel) return fromLabel;
+    const link = row.querySelector('a[role="link"], a[href]');
+    const t = link && (link.textContent || '').trim();
+    return t || 'conversation';
   }
 
   function findChatList() {
     return resolveSelector(document, [
       (r) => r.querySelector('[aria-label="Chats"] [role="grid"]'),
       (r) => r.querySelector('[role="navigation"] [role="grid"]'),
-      // Anchor on the "More options" button (aria-controls is structural, not user-specific)
-      // and walk up to find its containing grid/list — guarantees we get the conversation
-      // list, not the thread view which also uses gridcell.
+      // Anchor on the "More options" button (aria-controls is structural) and walk
+      // up to its grid/list — guarantees the conversation list, not the thread view.
       (r) => {
         const btn = r.querySelector('[aria-haspopup="menu"][aria-controls]');
         if (!btn) return null;
-        return btn.closest('[role="grid"]') || btn.closest('[role="list"]') ||
-               btn.closest('[role="navigation"]');
+        return btn.closest('[role="grid"]') || btn.closest('[role="list"]') || btn.closest('[role="navigation"]');
       },
       (r) => r.querySelector('[role="grid"]'),
       '[role="grid"]',
@@ -159,14 +225,12 @@
 
   function findFirstRow() {
     const list = findChatList();
-    // Search inside the chat list first, then fall back to whole document.
     const scope = list || document;
     for (const btn of scope.querySelectorAll('[aria-haspopup="menu"][aria-controls]')) {
       const row = rowFromMoreButton(btn);
       if (row && !skippedRows.has(row)) return row;
     }
     if (list) {
-      // No More-options buttons found inside the list — try generic row selectors.
       const found = resolveSelector(list, [
         (r) => r.querySelector('[role="row"]'),
         (r) => r.querySelector('[role="gridcell"]'),
@@ -178,8 +242,8 @@
   }
 
   // Tag live elements with data-df indices using the SAME depth-first traversal
-  // (and caps) as redactStructure, so an AI-returned `[data-df="N"]` selector
-  // resolves against the real DOM.
+  // (and caps) as redactStructure, so a returned `[data-df="N"]` resolves against
+  // the real DOM. Used by the agent's observe/click_element tools.
   function tagElements(root, { maxNodes = 200, maxDepth = 12 } = {}) {
     let count = 0;
     let index = 0;
@@ -196,81 +260,11 @@
     })(root, 0);
   }
 
-  // Build a reusable, more-stable selector from an element's own attributes,
-  // so we can cache it and skip future AI calls for the same target.
-  // Prefers structural attributes over content-bearing ones: aria-controls and
-  // aria-haspopup are structural; aria-label often contains user-specific names
-  // (e.g. "More options for Umutoniwase Angel") that differ across rows.
-  function deriveStableSelector(el) {
-    const controls = el.getAttribute && el.getAttribute('aria-controls');
-    if (controls) return `[aria-controls="${controls.replace(/"/g, '\\"')}"]`;
-    const haspopup = el.getAttribute && el.getAttribute('aria-haspopup');
-    const role = el.getAttribute && el.getAttribute('role');
-    if (haspopup) return role ? `[role="${role}"][aria-haspopup="${haspopup}"]` : `[aria-haspopup="${haspopup}"]`;
-    const aria = el.getAttribute && el.getAttribute('aria-label');
-    if (aria) return `[aria-label="${aria.replace(/"/g, '\\"')}"]`;
-    const cls = el.classList && el.classList[0];
-    if (role && cls) return `[role="${role}"].${CSS.escape(cls)}`;
-    if (role) return `[role="${role}"]`;
-    if (cls) return `.${CSS.escape(cls)}`;
-    return null;
-  }
-
-  // AI fallback: ask DeepSeek (via background) which element in `container` is `target`.
-  // Returns the live element or null. Caches a stable selector on success.
-  async function findWithAi(container, target) {
-    if (!state.aiEnabled) return null;
-
-    // Try a cached selector first (no network call).
-    if (aiCache[target]) {
-      const cached = safeQuery(container, aiCache[target]);
-      if (cached) return cached;
-    }
-
-    log('AI: locating ' + target + '…');
-    tagElements(container);
-    const structure = redactStructure(container);
-    let response;
-    try {
-      response = await browser.runtime.sendMessage({
-        type: 'ASK_AI',
-        payload: { target, structure },
-      });
-    } catch (err) {
-      log('AI error: ' + err.message);
-      return null;
-    }
-    if (!response || response.error) {
-      log('AI unavailable: ' + ((response && response.error) || 'no response'));
-      return null;
-    }
-    const selector = parseSelectorResponse(response.content);
-    if (!selector) {
-      log('AI returned no usable selector.');
-      return null;
-    }
-    const node = safeQuery(container, selector);
-    if (node) {
-      const stable = deriveStableSelector(node);
-      if (stable) aiCache[target] = stable;
-      log('AI located ' + target + '.');
-    } else {
-      log('AI selector did not match.');
-    }
-    return node;
-  }
-
-  function safeQuery(root, selector) {
-    try {
-      return root.querySelector(selector);
-    } catch (err) {
-      return null;
-    }
-  }
+  // ---------------------------- Element finding (heuristics) ----------------------------
 
   // Find the deepest element in `root` whose trimmed, case-insensitive textContent
-  // exactly equals one of `candidates`. Returns null if none found.
-  // Used when Facebook omits role attributes on menu items.
+  // exactly equals one of `candidates`. Needed because Facebook menu items often
+  // have no role attribute.
   function findByText(root, candidates) {
     const wants = candidates.map((c) => c.toLowerCase());
     const all = root.querySelectorAll('*');
@@ -282,11 +276,20 @@
     return null;
   }
 
-  // After clicking the "⋯" button, wait for its controlled menu to appear.
-  // Polls for BOTH the aria-controls target (exact match) AND a role="menu"
-  // popup, returning whichever appears first. Facebook's aria-controls value
-  // often does not match the mounted menu's id (it is predicted before mount),
-  // so relying on getElementById alone times out even when the menu is visible.
+  // Local, synchronous element finder: aria/role/text contains-match first, then
+  // an exact-text deep match. No network, no AI.
+  function findElement(scope, candidates) {
+    const hit = matchByText(
+      scope.querySelectorAll('[role="button"], [role="menuitem"], button, [aria-label]'),
+      candidates
+    );
+    if (hit) return hit;
+    return findByText(scope, candidates);
+  }
+
+  // After clicking the "⋯" button, wait for its menu. Polls for BOTH the
+  // aria-controls target AND a role="menu"/"listbox" popup — Facebook's
+  // aria-controls value often does not match the mounted menu's id.
   function waitForMenu(moreBtn) {
     const menuId = moreBtn && moreBtn.getAttribute('aria-controls');
     return waitFor(
@@ -298,23 +301,19 @@
     ).catch(() => null);
   }
 
-  // Find an element. When AI is enabled it drives identification for all three steps:
-  // cache check first (free), then an API call if needed. Heuristics run as fallback
-  // when AI is off or returns null. After the first conversation, every step is a cache
-  // hit — at most 3 API calls are made per session.
-  async function findElement({ scope, candidates, aiTarget }) {
-    if (state.aiEnabled) {
-      const aiResult = await findWithAi(scope, aiTarget);
-      if (aiResult) return aiResult;
+  // Collect the visible text of items in an open menu — used to explain a
+  // failed delete back to the agent (menuItemsSeen).
+  function menuItemsText(root) {
+    const out = [];
+    const seen = new Set();
+    for (const el of root.querySelectorAll('[role="menuitem"], [role="button"], a, span, div')) {
+      const t = (el.textContent || '').trim();
+      if (t && t.length < 60 && !seen.has(t)) {
+        seen.add(t);
+        out.push(t);
+      }
     }
-    // AI disabled or failed: heuristic fallback.
-    const hit = matchByText(
-      scope.querySelectorAll('[role="button"], [role="menuitem"], button, [aria-label]'),
-      candidates
-    );
-    if (hit) return hit;
-    // Facebook sometimes omits role attributes — fall back to exact text match.
-    return findByText(scope, candidates);
+    return out.slice(0, 25);
   }
 
   // ---------------------------- Deletion ----------------------------
@@ -328,66 +327,58 @@
     el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
   }
 
-  async function deleteOne(row) {
-    // Click the conversation to open it — gives visual feedback and logs which user is next.
-    const directBtn = row.querySelector('[aria-haspopup="menu"][aria-controls]');
-    const rawLabel = directBtn ? (directBtn.getAttribute('aria-label') || '') : '';
-    const name = rawLabel.replace(/^more options for\s*/i, '') || rawLabel || 'conversation';
-    log(`Processing: ${name}`);
+  function dispatchEscape() {
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true })
+    );
+  }
 
-    const link = resolveSelector(row, [
-      (r) => r.querySelector('a[role="link"]'),
-      (r) => r.querySelector('a[href]'),
-    ]);
-    if (link) {
-      link.click();
-      await sleep(jitter(300, 500));
+  // Typed error so callers can distinguish "not deletable" (skip) from real failures.
+  class DeleteError extends Error {
+    constructor(code, message, menuItemsSeen) {
+      super(message);
+      this.code = code;
+      this.menuItemsSeen = menuItemsSeen;
     }
+  }
 
+  // The single, shared deletion path: hover row → open ⋯ menu → click "Delete
+  // chat" → confirm → wait for the row to detach. Throws DeleteError on failure.
+  async function performDelete(row) {
     fireMouseEnter(row);
-    await sleep(jitter(300, 600));
+    await sleep(jitter(200, 400));
 
-    // 1. Open the "⋯" menu on this row.
-    // directBtn is already found structurally above; findElement is only needed as AI
-    // fallback when the structural selector fails.
-    const moreBtn = directBtn || await findElement({
-      scope: row,
-      candidates: LABELS.moreMenu,
-      aiTarget: 'the More / options (⋯) menu button for this conversation row',
-    });
-    if (!moreBtn) throw new Error('Could not find the "More" (⋯) menu on a conversation.');
+    // 1. Open the "⋯" menu (structural selector first, text heuristic as backup).
+    const moreBtn =
+      row.querySelector('[aria-haspopup="menu"][aria-controls]') || findElement(row, LABELS.moreMenu);
+    if (!moreBtn) throw new DeleteError('no_more_button', 'Could not find the "More" (⋯) menu on this row.');
     moreBtn.click();
 
-    // 2. Click "Delete chat" in the popup menu.
-    // Use aria-controls to find the specific menu this button opened — avoids passing
-    // the entire document body to the AI fallback when role="menu" is absent.
+    // 2. Click "Delete chat" in the opened menu.
     const menuRoot = await waitForMenu(moreBtn);
-    if (!menuRoot) throw new Error('The "More options" menu did not appear.');
-    const deleteHit = await findElement({
-      scope: menuRoot,
-      candidates: LABELS.deleteChat,
-      aiTarget: 'the "Delete chat" menu item',
-    });
-    if (!deleteHit) throw new Error('Could not find the "Delete chat" menu item.');
+    if (!menuRoot) throw new DeleteError('no_menu', 'The "More options" menu did not appear.');
+    const deleteHit = findElement(menuRoot, LABELS.deleteChat);
+    if (!deleteHit) {
+      throw new DeleteError('no_delete_option', 'No "Delete chat" item in this row\'s menu.', menuItemsText(menuRoot));
+    }
     deleteHit.click();
 
     // 3. Confirm in the dialog.
-    const dialog = await waitFor(
-      () => document.querySelector('[role="dialog"], [role="alertdialog"]'),
-      { timeout: 6000, interval: 150 }
-    );
-    const confirmBtn = await findElement({
-      scope: dialog,
-      candidates: LABELS.confirmDelete,
-      aiTarget: 'the confirm "Delete" button inside the dialog',
-    });
-    if (!confirmBtn) throw new Error('Could not find the confirm "Delete" button.');
+    const dialog = await waitFor(() => document.querySelector('[role="dialog"], [role="alertdialog"]'), {
+      timeout: 6000,
+      interval: 150,
+    }).catch(() => null);
+    if (!dialog) throw new DeleteError('no_dialog', 'The confirm dialog did not appear.');
+    const confirmBtn = findElement(dialog, LABELS.confirmDelete);
+    if (!confirmBtn) throw new DeleteError('no_confirm', 'Could not find the confirm "Delete" button.');
     confirmBtn.click();
 
     // 4. Wait for the row to detach (deletion completed).
     await waitFor(() => !row.isConnected, { timeout: 8000, interval: 150 });
     return true;
   }
+
+  // ---------------------------- Heuristic loop (AI off) ----------------------------
 
   async function runLoop() {
     const initialCount = findAllRows().length;
@@ -400,20 +391,20 @@
         setRunning(false);
         return;
       }
+      const name = rowName(row);
+      log(`Processing: ${name}`);
       try {
-        await deleteOne(row);
+        await performDelete(row);
         state.deletedCount += 1;
         updateCount();
         log(`Deleted #${state.deletedCount}.`);
       } catch (err) {
-        if (err.message.includes('Delete chat') || err.message.includes('menu did not appear')) {
-          // Not a conversation (Marketplace icon, channel, etc.) — close menu if open and skip.
+        if (err.code === 'no_delete_option' || err.code === 'no_menu') {
+          // Not a conversation (Marketplace icon, channel, etc.) — close menu and skip.
           skippedRows.add(row);
-          document.dispatchEvent(
-            new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true })
-          );
+          dispatchEscape();
           await sleep(400);
-          log('Skipped: ' + err.message);
+          log('Skipped (' + err.message + ').');
         } else {
           log('Stopped: ' + err.message);
           setRunning(false);
@@ -422,6 +413,248 @@
       }
       await sleep(jitter(800, 1500));
     }
+  }
+
+  // ---------------------------- Agentic loop (AI on) ----------------------------
+
+  const AGENT_SYSTEM_PROMPT = [
+    'You are an autonomous agent that deletes Facebook Messenger conversations inside a browser extension.',
+    'The user has ALREADY confirmed the deletion — do NOT ask for confirmation.',
+    'You cannot see or click the page directly. You act ONLY through these tools:',
+    '- list_conversations: list currently loaded rows (id + name).',
+    '- delete_conversation(id): delete the row with that id.',
+    '- scroll_conversation_list: load more rows (the list is virtualized; not all rows load at once).',
+    '- observe / click_element(df): inspect raw structure (with text) and click a data-df element to recover from an unexpected dialog or a delete that failed.',
+    '- finish(summary): call when the task is complete.',
+    '',
+    'Process:',
+    '1. Call list_conversations.',
+    "2. Decide which to delete from the user's instruction. If it is empty or says 'all', delete every conversation.",
+    '3. Delete them one at a time with delete_conversation.',
+    '4. If delete_conversation returns status "no_delete_option", that row is not a deletable conversation (Marketplace, a channel, etc.) — skip it, do not retry it.',
+    '5. If it returns status "error", try observe + click_element to recover, otherwise skip and continue.',
+    '6. Re-list after deleting several rows or after scrolling. Call scroll_conversation_list to load more. When no deletable conversations remain and scrolling loads nothing new, call finish.',
+    '',
+    'Be efficient. Never delete the same id twice. Keep going without pausing for the user.',
+  ].join('\n');
+
+  const AGENT_TOOLS = [
+    {
+      type: 'function',
+      function: {
+        name: 'list_conversations',
+        description: 'List currently loaded conversation rows, each with a stable id and the contact/chat name.',
+        parameters: { type: 'object', properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'delete_conversation',
+        description: 'Delete the conversation row with the given id (opens its ⋯ menu, clicks Delete chat, confirms).',
+        parameters: {
+          type: 'object',
+          properties: { id: { type: 'integer', description: 'The id from list_conversations.' } },
+          required: ['id'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'scroll_conversation_list',
+        description: 'Scroll the conversation list to load more rows. The list is virtualized.',
+        parameters: { type: 'object', properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'observe',
+        description:
+          'Return the structure (including visible text) of the currently open menu or dialog, or the conversation list if none is open. Each element has a data-df index usable with click_element.',
+        parameters: { type: 'object', properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'click_element',
+        description: 'Click the element with the given data-df index from the most recent observe call.',
+        parameters: {
+          type: 'object',
+          properties: { df: { type: 'integer', description: 'The data-df index from observe.' } },
+          required: ['df'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'finish',
+        description: 'End the run with a short summary of what was done.',
+        parameters: {
+          type: 'object',
+          properties: { summary: { type: 'string' } },
+          required: ['summary'],
+        },
+      },
+    },
+  ];
+
+  // ---- Tool implementations ----
+
+  function toolListConversations() {
+    const out = [];
+    for (const row of findAllRows()) {
+      let id = row.getAttribute('data-df-id');
+      if (!id) {
+        id = String(agentRowSeq++);
+        row.setAttribute('data-df-id', id);
+      }
+      agentRows.set(id, row);
+      out.push({ id: Number(id), name: rowName(row) });
+    }
+    return { conversations: out };
+  }
+
+  async function toolDeleteConversation(args) {
+    const id = String(args && args.id);
+    let row = agentRows.get(id);
+    if (!row || !row.isConnected) row = document.querySelector(`[data-df-id="${id}"]`);
+    if (!row || !row.isConnected) {
+      return { status: 'error', detail: 'No live conversation with that id (it may already be deleted). Call list_conversations again.' };
+    }
+    const name = rowName(row);
+    try {
+      await performDelete(row);
+      agentRows.delete(id);
+      state.deletedCount += 1;
+      updateCount();
+      log(`Deleted #${state.deletedCount}: ${name}`);
+      return { status: 'deleted', name };
+    } catch (err) {
+      dispatchEscape();
+      await sleep(300);
+      if (err.code === 'no_delete_option') {
+        log(`Skipped (no delete option): ${name}`);
+        return { status: 'no_delete_option', detail: err.message, menuItemsSeen: err.menuItemsSeen };
+      }
+      return { status: 'error', detail: err.message, menuItemsSeen: err.menuItemsSeen };
+    }
+  }
+
+  async function toolScroll() {
+    const list = findChatList();
+    const before = findAllRows().length;
+    const scroller = list || document.scrollingElement || document.body;
+    try {
+      scroller.scrollTop = scroller.scrollHeight;
+    } catch (e) {
+      /* ignore */
+    }
+    await sleep(jitter(700, 1200));
+    const after = findAllRows().length;
+    return { loadedCount: after, gained: after - before };
+  }
+
+  function toolObserve() {
+    const root =
+      document.querySelector('[role="dialog"], [role="alertdialog"]') ||
+      document.querySelector('[role="menu"], [role="listbox"]') ||
+      findChatList() ||
+      document.body;
+    lastObserveRoot = root;
+    tagElements(root);
+    return { structure: redactStructure(root, { includeText: true }) };
+  }
+
+  function toolClickElement(args) {
+    const df = String(args && args.df);
+    const root = lastObserveRoot || document;
+    const el = root.querySelector(`[data-df="${df}"]`);
+    if (!el) return { ok: false, detail: 'No element with that data-df. Call observe first.' };
+    el.click();
+    return { ok: true };
+  }
+
+  async function executeTool(name, args) {
+    try {
+      switch (name) {
+        case 'list_conversations':
+          return toolListConversations();
+        case 'delete_conversation':
+          return await toolDeleteConversation(args);
+        case 'scroll_conversation_list':
+          return await toolScroll();
+        case 'observe':
+          return toolObserve();
+        case 'click_element':
+          return toolClickElement(args);
+        case 'finish':
+          state.finished = true;
+          return { done: true };
+        default:
+          return { error: 'Unknown tool: ' + name };
+      }
+    } catch (err) {
+      return { status: 'error', detail: err.message };
+    }
+  }
+
+  async function runAgent(instruction) {
+    agentRows.clear();
+    agentRowSeq = 0;
+    lastObserveRoot = null;
+    state.finished = false;
+
+    const task =
+      instruction && instruction.trim()
+        ? `User instruction: "${instruction.trim()}". Use list_conversations to read names and decide which to delete.`
+        : 'Delete ALL conversations in the list.';
+
+    const messages = [
+      { role: 'system', content: AGENT_SYSTEM_PROMPT },
+      { role: 'user', content: task },
+    ];
+
+    for (let i = 0; i < MAX_ITERATIONS && state.running && !state.finished; i++) {
+      let resp;
+      try {
+        resp = await browser.runtime.sendMessage({ type: 'AGENT_TURN', payload: { messages, tools: AGENT_TOOLS } });
+      } catch (err) {
+        log('AI error: ' + err.message);
+        break;
+      }
+      if (!resp || resp.error) {
+        log('AI stopped: ' + ((resp && resp.error) || 'no response'));
+        break;
+      }
+
+      const assistant = resp.message;
+      messages.push(assistant);
+
+      if (assistant.tool_calls && assistant.tool_calls.length) {
+        for (const tc of assistant.tool_calls) {
+          let args = {};
+          try {
+            args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+          } catch (e) {
+            args = {};
+          }
+          if (tc.function.name === 'finish') log('AI: ' + (args.summary || 'done'));
+          const result = await executeTool(tc.function.name, args);
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result) });
+          if (!state.running) break;
+        }
+      } else {
+        if (assistant.content) log('AI: ' + assistant.content);
+        break; // no tool calls → model is done
+      }
+    }
+
+    log(`Agent finished. Deleted ${state.deletedCount}.`);
+    setRunning(false);
   }
 
   // ---------------------------- Messaging ----------------------------

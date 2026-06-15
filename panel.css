@@ -28,7 +28,7 @@
   font-size: 16px;
   line-height: 1;
 }
-#deletef-panel .deletef-buttons { display: flex; gap: 8px; margin-bottom: 8px; }
+#deletef-panel .deletef-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 #deletef-panel button.deletef-action {
   flex: 1;
   padding: 8px;
@@ -40,7 +40,18 @@
 }
 #deletef-panel button.deletef-start { background: #d23f57; }
 #deletef-panel button.deletef-stop { background: #606770; }
+#deletef-panel button.deletef-csv { background: #1877f2; flex-basis: 100%; }
 #deletef-panel button:disabled { opacity: 0.5; cursor: not-allowed; }
+#deletef-panel .deletef-instr {
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border: 1px solid #ccd0d5;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
 #deletef-panel .deletef-count { font-weight: 700; margin-bottom: 6px; }
 #deletef-panel .deletef-ai {
   font-size: 11px;
