@@ -20,7 +20,8 @@
   };
 
   const state = { running: false, deletedCount: 0, aiEnabled: false };
-  const aiCache = {}; // target -> stable CSS selector discovered by the AI this session
+  const aiCache = {};     // target -> stable CSS selector discovered by the AI this session
+  const skippedRows = new WeakSet(); // rows with no "Delete chat" option (Marketplace, etc.)
 
   let logEl, countEl, aiEl, startBtn, stopBtn;
 
@@ -121,34 +122,59 @@
 
   // ---------------------------- Element finding ----------------------------
 
+  // Identify a conversation row by its "More options" (⋯) button.
+  // The button's aria-controls attribute is the most reliable structural marker.
+  function rowFromMoreButton(btn) {
+    return btn.closest('[role="gridcell"]') || btn.closest('[role="row"]') || btn.parentElement;
+  }
+
+  // Return all visible conversation rows (deduped).
+  function findAllRows() {
+    const rows = [];
+    const seen = new Set();
+    for (const btn of document.querySelectorAll('[aria-haspopup="menu"][aria-controls]')) {
+      const row = rowFromMoreButton(btn);
+      if (row && !seen.has(row)) { seen.add(row); rows.push(row); }
+    }
+    return rows;
+  }
+
   function findChatList() {
     return resolveSelector(document, [
       (r) => r.querySelector('[aria-label="Chats"] [role="grid"]'),
       (r) => r.querySelector('[role="navigation"] [role="grid"]'),
+      // Anchor on the "More options" button (aria-controls is structural, not user-specific)
+      // and walk up to find its containing grid/list — guarantees we get the conversation
+      // list, not the thread view which also uses gridcell.
+      (r) => {
+        const btn = r.querySelector('[aria-haspopup="menu"][aria-controls]');
+        if (!btn) return null;
+        return btn.closest('[role="grid"]') || btn.closest('[role="list"]') ||
+               btn.closest('[role="navigation"]');
+      },
       (r) => r.querySelector('[role="grid"]'),
       '[role="grid"]',
-      // Fallback: derive the list container from the first visible conversation row.
-      (r) => {
-        const cell = r.querySelector('[role="gridcell"]');
-        return cell ? cell.parentElement : null;
-      },
     ]);
   }
 
   function findFirstRow() {
     const list = findChatList();
+    // Search inside the chat list first, then fall back to whole document.
+    const scope = list || document;
+    for (const btn of scope.querySelectorAll('[aria-haspopup="menu"][aria-controls]')) {
+      const row = rowFromMoreButton(btn);
+      if (row && !skippedRows.has(row)) return row;
+    }
     if (list) {
+      // No More-options buttons found inside the list — try generic row selectors.
       const found = resolveSelector(list, [
         (r) => r.querySelector('[role="row"]'),
         (r) => r.querySelector('[role="gridcell"]'),
         (r) => r.querySelector('a[role="link"]'),
       ]);
-      if (found) return found;
+      if (found && !skippedRows.has(found)) return found;
     }
-    // Direct fallback: find any conversation row by its "More options" button.
-    const btn = document.querySelector('[aria-haspopup="menu"][aria-label]');
-    if (!btn) return null;
-    return btn.closest('[role="gridcell"]') || btn.closest('[role="row"]') || btn.parentElement;
+    return null;
   }
 
   // Tag live elements with data-df indices using the SAME depth-first traversal
@@ -172,10 +198,17 @@
 
   // Build a reusable, more-stable selector from an element's own attributes,
   // so we can cache it and skip future AI calls for the same target.
+  // Prefers structural attributes over content-bearing ones: aria-controls and
+  // aria-haspopup are structural; aria-label often contains user-specific names
+  // (e.g. "More options for Umutoniwase Angel") that differ across rows.
   function deriveStableSelector(el) {
+    const controls = el.getAttribute && el.getAttribute('aria-controls');
+    if (controls) return `[aria-controls="${controls.replace(/"/g, '\\"')}"]`;
+    const haspopup = el.getAttribute && el.getAttribute('aria-haspopup');
+    const role = el.getAttribute && el.getAttribute('role');
+    if (haspopup) return role ? `[role="${role}"][aria-haspopup="${haspopup}"]` : `[aria-haspopup="${haspopup}"]`;
     const aria = el.getAttribute && el.getAttribute('aria-label');
     if (aria) return `[aria-label="${aria.replace(/"/g, '\\"')}"]`;
-    const role = el.getAttribute && el.getAttribute('role');
     const cls = el.classList && el.classList[0];
     if (role && cls) return `[role="${role}"].${CSS.escape(cls)}`;
     if (role) return `[role="${role}"]`;
@@ -263,14 +296,23 @@
     ).catch(() => null);
   }
 
-  // Find an element by heuristic text match, falling back to the AI if enabled.
+  // Find an element. When AI is enabled it drives identification for all three steps:
+  // cache check first (free), then an API call if needed. Heuristics run as fallback
+  // when AI is off or returns null. After the first conversation, every step is a cache
+  // hit — at most 3 API calls are made per session.
   async function findElement({ scope, candidates, aiTarget }) {
-    const hit = matchByText(scope.querySelectorAll('[role="button"], [role="menuitem"], button, [aria-label]'), candidates);
+    if (state.aiEnabled) {
+      const aiResult = await findWithAi(scope, aiTarget);
+      if (aiResult) return aiResult;
+    }
+    // AI disabled or failed: heuristic fallback.
+    const hit = matchByText(
+      scope.querySelectorAll('[role="button"], [role="menuitem"], button, [aria-label]'),
+      candidates
+    );
     if (hit) return hit;
-    // Facebook sometimes omits role attributes on menu items — fall back to exact text match.
-    const byText = findByText(scope, candidates);
-    if (byText) return byText;
-    return findWithAi(scope, aiTarget);
+    // Facebook sometimes omits role attributes — fall back to exact text match.
+    return findByText(scope, candidates);
   }
 
   // ---------------------------- Deletion ----------------------------
@@ -285,6 +327,21 @@
   }
 
   async function deleteOne(row) {
+    // Click the conversation to open it — gives visual feedback and logs which user is next.
+    const moreBtn = row.querySelector('[aria-haspopup="menu"][aria-controls]');
+    const rawLabel = moreBtn ? (moreBtn.getAttribute('aria-label') || '') : '';
+    const name = rawLabel.replace(/^more options for\s*/i, '') || rawLabel || 'conversation';
+    log(`Processing: ${name}`);
+
+    const link = resolveSelector(row, [
+      (r) => r.querySelector('a[role="link"]'),
+      (r) => r.querySelector('a[href]'),
+    ]);
+    if (link) {
+      link.click();
+      await sleep(jitter(300, 500));
+    }
+
     fireMouseEnter(row);
     await sleep(jitter(300, 600));
 
@@ -311,10 +368,10 @@
     deleteHit.click();
 
     // 3. Confirm in the dialog.
-    const dialog = await waitFor(() => document.querySelector('[role="dialog"]'), {
-      timeout: 6000,
-      interval: 150,
-    });
+    const dialog = await waitFor(
+      () => document.querySelector('[role="dialog"], [role="alertdialog"]'),
+      { timeout: 6000, interval: 150 }
+    );
     const confirmBtn = await findElement({
       scope: dialog,
       candidates: LABELS.confirmDelete,
@@ -329,6 +386,9 @@
   }
 
   async function runLoop() {
+    const initialCount = findAllRows().length;
+    log(`Found ${initialCount} conversation(s). Starting…`);
+
     while (state.running) {
       const row = findFirstRow();
       if (!row) {
@@ -342,9 +402,19 @@
         updateCount();
         log(`Deleted #${state.deletedCount}.`);
       } catch (err) {
-        log('Stopped: ' + err.message);
-        setRunning(false);
-        return;
+        if (err.message.includes('Delete chat') || err.message.includes('menu did not appear')) {
+          // Not a conversation (Marketplace icon, channel, etc.) — close menu if open and skip.
+          skippedRows.add(row);
+          document.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true })
+          );
+          await sleep(400);
+          log('Skipped (no delete option).');
+        } else {
+          log('Stopped: ' + err.message);
+          setRunning(false);
+          return;
+        }
       }
       await sleep(jitter(800, 1500));
     }

@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Deletes all conversation threads from facebook.com/messages. Use at your own risk; deletion is permanent.",
   "icons": {
+    "24": "icons/trash-solid.svg",
     "48": "icons/icon-48.png",
     "96": "icons/icon-96.png"
   },
@@ -19,6 +20,7 @@
   "action": {
     "default_title": "DeleteF — toggle delete panel",
     "default_icon": {
+      "24": "icons/trash-solid.svg",
       "48": "icons/icon-48.png",
       "96": "icons/icon-96.png"
     }
