@@ -328,8 +328,8 @@
 
   async function deleteOne(row) {
     // Click the conversation to open it — gives visual feedback and logs which user is next.
-    const moreBtn = row.querySelector('[aria-haspopup="menu"][aria-controls]');
-    const rawLabel = moreBtn ? (moreBtn.getAttribute('aria-label') || '') : '';
+    const directBtn = row.querySelector('[aria-haspopup="menu"][aria-controls]');
+    const rawLabel = directBtn ? (directBtn.getAttribute('aria-label') || '') : '';
     const name = rawLabel.replace(/^more options for\s*/i, '') || rawLabel || 'conversation';
     log(`Processing: ${name}`);
 
