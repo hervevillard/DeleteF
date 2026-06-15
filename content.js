@@ -283,15 +283,17 @@
   }
 
   // After clicking the "⋯" button, wait for its controlled menu to appear.
-  // Uses aria-controls first (exact match), then falls back to role="menu".
+  // Polls for BOTH the aria-controls target (exact match) AND a role="menu"
+  // popup, returning whichever appears first. Facebook's aria-controls value
+  // often does not match the mounted menu's id (it is predicted before mount),
+  // so relying on getElementById alone times out even when the menu is visible.
   function waitForMenu(moreBtn) {
     const menuId = moreBtn && moreBtn.getAttribute('aria-controls');
-    if (menuId) {
-      return waitFor(() => document.getElementById(menuId), { timeout: 4000, interval: 100 })
-        .catch(() => null);
-    }
     return waitFor(
-      () => document.querySelector('[role="menu"]') || document.querySelector('[role="listbox"]'),
+      () =>
+        (menuId && document.getElementById(menuId)) ||
+        document.querySelector('[role="menu"]') ||
+        document.querySelector('[role="listbox"]'),
       { timeout: 4000, interval: 100 }
     ).catch(() => null);
   }
