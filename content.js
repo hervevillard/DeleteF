@@ -328,11 +328,24 @@
     return btn.closest('[role="gridcell"]') || btn.closest('[role="row"]') || btn.parentElement;
   }
 
+  function isConversationMoreButton(btn) {
+    if (!btn) return false;
+    const aria = (btn.getAttribute && btn.getAttribute('aria-label')) || '';
+    // Canonical Messenger conversation menu button text.
+    if (nameFromAriaLabel(aria)) return true;
+
+    const row = rowFromMoreButton(btn);
+    if (!row) return false;
+    // Structural fallback for locale/experiment text variants.
+    return !!row.querySelector('a[role="link"], a[href]');
+  }
+
   // Return all visible conversation rows (deduped).
   function findAllRows() {
     const rows = [];
     const seen = new Set();
     for (const btn of document.querySelectorAll('[aria-haspopup="menu"][aria-controls]')) {
+      if (!isConversationMoreButton(btn)) continue;
       const row = rowFromMoreButton(btn);
       if (row && !seen.has(row)) {
         seen.add(row);
@@ -387,6 +400,7 @@
     const list = findChatList();
     const scope = list || document;
     for (const btn of scope.querySelectorAll('[aria-haspopup="menu"][aria-controls]')) {
+      if (!isConversationMoreButton(btn)) continue;
       const row = rowFromMoreButton(btn);
       if (row && !skippedRows.has(row)) return row;
     }
@@ -584,6 +598,8 @@
       () => {
         const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]')).filter(isVisible);
         if (!dialogs.length) return null;
+        const deleteDialog = dialogs.find((d) => isDeleteRecoveryRoot(d) || hasDeleteConfirmControl(d));
+        if (deleteDialog) return deleteDialog;
         return dialogs[dialogs.length - 1];
       },
       { timeout: 6000, interval: 150 }
@@ -621,6 +637,16 @@
       t.includes('close') ||
       t.includes('more options')
     );
+  }
+
+  function hasDeleteConfirmControl(root) {
+    if (!root) return false;
+    const controls = Array.from(root.querySelectorAll(DIALOG_CONFIRM_SELECTOR));
+    for (const el of controls) {
+      const t = normalizeText((el.textContent || '') + ' ' + ((el.getAttribute && el.getAttribute('aria-label')) || ''));
+      if (t.includes('delete') || t.includes('remove')) return true;
+    }
+    return false;
   }
 
   // After clicking the "⋯" button, wait for its menu. Polls for BOTH the
