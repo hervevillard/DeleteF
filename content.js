@@ -36,8 +36,10 @@
   };
 
   const MAX_ITERATIONS = 100; // agent loop / cost backstop
-  const ACTIONABLE_SELECTOR =
+  const INTERACTIVE_SELECTOR =
     '[role="button"], [role="menuitem"], [role="option"], button, a[href], [aria-haspopup="menu"], [tabindex]:not([tabindex="-1"])';
+  const STRICT_ACTIONABLE_SELECTOR =
+    '[role="button"], [role="menuitem"], [role="option"], button, a[href], [aria-haspopup="menu"]';
 
   const state = { running: false, deletedCount: 0, aiEnabled: false, finished: false, debug: false };
   const skippedRows = new WeakSet(); // rows with no "Delete chat" option (Marketplace, etc.)
@@ -509,14 +511,14 @@
     return r.width > 2 && r.height > 2;
   }
 
-  function asActionable(node, scope) {
+  function asActionable(node, scope, selector = INTERACTIVE_SELECTOR) {
     const picked = nearestActionable(node, scope);
-    return picked && picked.matches && picked.matches(ACTIONABLE_SELECTOR) ? picked : null;
+    return picked && picked.matches && picked.matches(selector) ? picked : null;
   }
 
   // Fallback used mostly for confirm dialogs where actionable nodes sometimes
   // have weak role/aria semantics.
-  function findElementByNormalizedText(scope, candidates) {
+  function findElementByNormalizedText(scope, candidates, selector = INTERACTIVE_SELECTOR) {
     const wants = (candidates || []).map(normalizeText).filter(Boolean);
     if (!wants.length) return null;
 
@@ -532,7 +534,7 @@
 
     const best = pickBestMatch(labels, wants, { maxLen: 64 });
     if (best >= 0) {
-      const picked = asActionable(shortNodes[best], scope);
+      const picked = asActionable(shortNodes[best], scope, selector);
       if (picked) {
         debugLog(`findElementByNormalizedText(${wants.join(' | ')}) -> ${describeElement(picked)}`);
         return picked;
@@ -545,7 +547,7 @@
   // like <h2>"Delete chat" can never be selected as a click target.
   function findDialogConfirmButton(dialog, candidates) {
     if (!dialog) return null;
-    const controls = Array.from(dialog.querySelectorAll(ACTIONABLE_SELECTOR));
+    const controls = Array.from(dialog.querySelectorAll(STRICT_ACTIONABLE_SELECTOR));
     if (!controls.length) return null;
 
     const labels = controls.map((el) => {
@@ -556,7 +558,7 @@
 
     const best = pickBestMatch(labels, candidates, { maxLen: 64 });
     if (best >= 0) {
-      const picked = asActionable(controls[best], dialog);
+      const picked = asActionable(controls[best], dialog, STRICT_ACTIONABLE_SELECTOR);
       if (picked) {
         debugLog(`findDialogConfirmButton(${candidates.join(' | ')}) via ranked match -> ${describeElement(picked)}`);
         return picked;
@@ -565,14 +567,14 @@
 
     const hit = matchByText(controls, candidates);
     if (hit) {
-      const picked = asActionable(hit, dialog);
+      const picked = asActionable(hit, dialog, STRICT_ACTIONABLE_SELECTOR);
       if (picked) {
         debugLog(`findDialogConfirmButton(${candidates.join(' | ')}) via text/aria contains -> ${describeElement(picked)}`);
         return picked;
       }
     }
 
-    return findElementByNormalizedText(dialog, candidates);
+    return findElementByNormalizedText(dialog, candidates, STRICT_ACTIONABLE_SELECTOR);
   }
 
   function waitForDialog() {
