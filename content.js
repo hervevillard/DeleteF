@@ -346,7 +346,9 @@
     await sleep(jitter(300, 600));
 
     // 1. Open the "⋯" menu on this row.
-    const moreBtn = await findElement({
+    // directBtn is already found structurally above; findElement is only needed as AI
+    // fallback when the structural selector fails.
+    const moreBtn = directBtn || await findElement({
       scope: row,
       candidates: LABELS.moreMenu,
       aiTarget: 'the More / options (⋯) menu button for this conversation row',
