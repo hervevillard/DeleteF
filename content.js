@@ -31,13 +31,13 @@
   // Defaults assume an ENGLISH Facebook UI.
   const LABELS = {
     moreMenu: ['more options', 'more', 'options'], // aria-label="More options for [Name]"
-    deleteChat: ['delete chat'],                    // menu item
+    deleteChat: ['delete chat', 'delete'],          // menu item
     confirmDelete: ['delete chat', 'delete'],       // confirm button inside the dialog
   };
 
   const MAX_ITERATIONS = 100; // agent loop / cost backstop
   const ACTIONABLE_SELECTOR =
-    '[role="button"], [role="menuitem"], [role="option"], button, a[href], [aria-haspopup="menu"]';
+    '[role="button"], [role="menuitem"], [role="option"], button, a[href], [aria-haspopup="menu"], [tabindex]:not([tabindex="-1"])';
 
   const state = { running: false, deletedCount: 0, aiEnabled: false, finished: false, debug: false };
   const skippedRows = new WeakSet(); // rows with no "Delete chat" option (Marketplace, etc.)
@@ -718,7 +718,11 @@
     const menuRoot = await waitForMenu(moreBtn);
     if (!menuRoot) throw new DeleteError('no_menu', 'The "More options" menu did not appear.');
     await sleep(jitter(250, 500));
-    const deleteHit = findElement(menuRoot, LABELS.deleteChat);
+    let deleteHit = findElement(menuRoot, LABELS.deleteChat);
+    if (!deleteHit) {
+      // Some locales/experiments use "Delete" instead of "Delete chat".
+      deleteHit = findElementByNormalizedText(menuRoot, ['delete']);
+    }
     if (!deleteHit) {
       throw new DeleteError('no_delete_option', 'No "Delete chat" item in this row\'s menu.', menuItemsText(menuRoot));
     }
